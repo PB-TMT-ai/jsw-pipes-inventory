@@ -1030,9 +1030,13 @@ App.jsx only print `row.moves` / `row.cover`.
 - **Views.** All three of the Dashboard's views stay in each block — *Size × Thickness*, *Production check*, *SKU list* — then
   the *FG age* grid. Tag and cover show only in *Size × Thickness*; *Production check* and *SKU list* are the Dashboard's own for that
   region (an e2e test compares them, table text against table text, with the Dashboard's Region filter on the same region).
-- **Show chips.** The Dashboard's chips, after a new first chip **FM / MM / SM view** (the default). It lays the grid out like
+- **Show chips (#391, owner 19-Nov-2026).** In front, as buttons: **FM / MM / SM view** (the default), **All measures** (By FM / MM / SM tab
+  only) and **Raw material**. The Dashboard's chips — *All, Stock flow, Sales, Opening stock, Production, Dispatch, Closing stock,
+  Confirmed, Non-confirmed, Pending to Dispatch, Production required* — sit under one **More ▾** dropdown (`PopMenu`); choosing one draws the
+  grid exactly as that chip does on the Dashboard, and More reads selected while one is on. The three view buttons (Size × Thickness,
+  Production check, SKU list) stay. The Dashboard's own chip row is unchanged (all buttons). FM / MM / SM view lays the grid out like
   Production check — **one group per thickness**: the tag + FG days of cover first, then Closing stock, Dispatch, Pending to
-  Dispatch, Production required — then a Total group; Section and Size pinned. The other chips draw the Dashboard's grid with no tags,
+  Dispatch, Production required — then a Total group; Section and Size pinned. The Dashboard's chips draw its grid with no tags,
   except **Raw material**, which on the sub-tab is the sub-tab's own (below).
 - **Raw material chip (#382, as built).** On every inner tab, in each region block, the Dashboard's *Raw material* chip is replaced
   (same label, same place) by `FM_MM_SM_RAW_CHIP`, drawn by `FmMmSmRawView`; the Dashboard's own chip, its *Slit coil that fits ·

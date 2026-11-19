@@ -4789,7 +4789,9 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   const [plantNames, setPlantNames] = useState([])
   const [show, setShow] = useState(tagRows ? FM_MM_SM_CHIP.key : 'all')
   const [view, setView] = useState('grid')
-  const showList = tagRows ? [FM_MM_SM_CHIP, ...(byTag ? [FM_MM_SM_ALL_CHIP] : []), ...SALES_GRID_SHOW.map(s => s.key === 'raw' ? FM_MM_SM_RAW_CHIP : s)] : SALES_GRID_SHOW
+  // On the sub-tab (#391) the sub-tab's own chips are in front and the Dashboard's (every other chip) sit under More.
+  const showList = tagRows ? [FM_MM_SM_CHIP, ...(byTag ? [FM_MM_SM_ALL_CHIP] : []), FM_MM_SM_RAW_CHIP, ...SALES_GRID_SHOW.filter(s => s.key !== 'raw')] : SALES_GRID_SHOW
+  const moreChips = tagRows ? SALES_GRID_SHOW.filter(s => s.key !== 'raw') : []
   // Leaving the By FM / MM / SM tab (#381) with All measures on: back to the default chip, never a chip not drawn.
   useEffect(() => { if (!byTag && show === FM_MM_SM_ALL_CHIP.key) setShow(FM_MM_SM_CHIP.key) }, [byTag, show])
   // A region block's tables carry the region in their name, so two blocks on one screen stay apart.
@@ -5042,9 +5044,24 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
       </div>
       <div className="flex flex-wrap items-center gap-1.5 mb-3" role="group" aria-label="Show">
         {view !== 'check' && <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Show:</span>}
-        {view !== 'check' && showList.map((s, i) => (
+        {/* #391: on the FM / MM / SM sub-tab the Dashboard's own chips sit under More; the sub-tab's chips stay in front. */}
+        {view !== 'check' && tagRows && (
+          <>
+            {showList.filter(s => !moreChips.includes(s)).map(s => (
+              <button key={s.key} type="button" aria-pressed={show === s.key} onClick={() => setShow(s.key)}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium ${show === s.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{s.label}</button>
+            ))}
+            <PopMenu label="More" on={moreChips.includes(showDef)} className="left-0 min-w-[12rem] py-1">
+              {close => moreChips.map(s => (
+                <button key={s.key} type="button" aria-pressed={show === s.key} onClick={() => { setShow(s.key); close() }}
+                  className={`block w-full text-left px-3 py-1.5 text-xs ${show === s.key ? 'bg-indigo-50 dark:bg-indigo-900/40 font-semibold' : 'hover:bg-slate-50 dark:hover:bg-slate-700'}`}>{s.label}</button>
+              ))}
+            </PopMenu>
+          </>
+        )}
+        {view !== 'check' && !tagRows && showList.map((s, i) => (
           <React.Fragment key={s.key}>
-            {(i === showList.findIndex(x => x.key === 'raw' || x.key === FM_MM_SM_RAW_CHIP.key) + 1 || (tagRows && i === (byTag ? 2 : 1))) && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
+            {i === showList.findIndex(x => x.key === 'raw') + 1 && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
             <button type="button" aria-pressed={show === s.key} onClick={() => setShow(s.key)}
               className={`px-2.5 py-1 rounded-md text-xs font-medium ${show === s.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{s.label}</button>
           </React.Fragment>

@@ -31,6 +31,8 @@ const strip = (page) => page.getByRole('group', { name: 'Sales view' })
 const block = (page, region) => page.getByRole('region', { name: `${region} block` })
 // #389: one region block is shown at a time; a spec that reads the other region switches to it first.
 const showRegion = (page, region) => page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: region, exact: true }).click()
+// #391: the Dashboard's chips sit under a More dropdown in each block.
+const pickMore = async (b, name) => { await b.getByRole('button', { name: /^More/ }).click(); await b.getByRole('button', { name, exact: true }).click() }
 const regionLine = async (page, region) => { await showRegion(page, region); return page.getByTestId('fm-mm-sm-region-line').innerText() }
 const openSubTab = async (page) => {
   await tab(page, 'Sales').click()
@@ -149,7 +151,7 @@ test('each block’s Production check and SKU list equal the Dashboard’s with 
     expect(await b.getByRole('table', { name: `Production check by size and thickness · ${region}` }).innerText()).toBe(dash[region].check)
     // The SKU list's columns follow the Show chip: set the Dashboard's default, All
     await b.getByRole('button', { name: 'SKU list', exact: true }).click()
-    await b.getByRole('button', { name: 'All', exact: true }).click()
+    await pickMore(b, 'All')
     expect(await b.getByRole('table', { name: `Sales by SKU · ${region}` }).innerText()).toBe(dash[region].list)
   }
 })
@@ -321,4 +323,29 @@ test('Key: days of cover is a dropdown on the tabs strip (not on Status key); th
   await expect(block(page, 'South').getByText(/Raw material available is each cell’s share/)).toBeHidden()
   await block(page, 'South').getByText('How this is worked out').first().click()
   await expect(block(page, 'South').getByText(/Raw material available is each cell’s share/)).toBeVisible()
+})
+
+// ── #391: three chips in front, the Dashboard's measures under More ──
+test('each block shows its own chips in front and the Dashboard’s eleven under More; More reads selected while one is on', async ({ page }) => {
+  await signIn(page, 'admin', { rows })
+  await openSubTab(page)
+  const b = block(page, 'South')
+  const show = b.getByRole('group', { name: 'Show' })
+  const inFront = (names) => Promise.all(names.map(n => expect(show.getByRole('button', { name: n, exact: true })).toBeVisible()))
+  await inFront(['FM / MM / SM view', 'Raw material'])
+  await expect(show.getByRole('button', { name: 'All measures', exact: true })).toHaveCount(0)   // By FM / MM / SM only
+  await expect(show.getByRole('button', { name: 'Stock flow', exact: true })).toHaveCount(0)     // behind More
+  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'By FM / MM / SM', exact: true }).click()
+  await inFront(['FM / MM / SM view', 'All measures', 'Raw material'])
+  const more = b.getByRole('button', { name: /^More/ })
+  await expect(more).toHaveAttribute('aria-pressed', 'false')
+  await more.click()
+  const names = ['All', 'Stock flow', 'Sales', 'Opening stock', 'Production', 'Dispatch', 'Closing stock', 'Confirmed', 'Non-confirmed', 'Pending to Dispatch', 'Production required']
+  for (const n of names) await expect(b.getByRole('button', { name: n, exact: true })).toBeVisible()
+  await b.getByRole('button', { name: 'Stock flow', exact: true }).click()
+  await expect(more).toHaveAttribute('aria-pressed', 'true')
+  await expect(b.getByRole('button', { name: 'Stock flow', exact: true })).toHaveCount(0)   // the menu closed
+  await expect(b.getByRole('table', { name: 'Sales by size and thickness · South', exact: true })).toBeVisible()  // the Dashboard's grid, whole
+  await b.getByRole('button', { name: 'Raw material', exact: true }).click()
+  await expect(more).toHaveAttribute('aria-pressed', 'false')
 })
