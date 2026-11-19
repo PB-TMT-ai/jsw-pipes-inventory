@@ -2830,18 +2830,20 @@ export function fmMmSmRawRows(raw, { sections = [], sizes = [], thicknesses = []
     acc.required = acc.required == null || c.required == null ? null : acc.required + c.required
     acc.rawRequired = acc.rawRequired == null || c.rawRequired == null ? null : acc.rawRequired + c.rawRequired
   }
-  const rows = new Map(), cols = new Set(), total = blank()
+  const rows = new Map(), colTotals = {}, total = blank()
   Object.entries(raw?.cells || {}).forEach(([k, c]) => {
     const cellAt = parseSalesGridCellKey(k), { section, size } = cellAt, t = String(cellAt.stdThickness ?? '')
     if (!filterSalesLines([cellAt], { sections, sizes, thicknesses }).length) return
     const rk = `${section}|${size}`
     const r = rows.get(rk) || { section, size, cells: {}, total: blank() }
     rows.set(rk, r)
-    r.cells[t] = c; put(r.total, c); put(total, c); cols.add(t)
+    r.cells[t] = c; put(r.total, c); put(total, c); put(colTotals[t] = colTotals[t] || blank(), c)
   })
   return {
     rows: [...rows.values()].sort(salesGridOrder),
-    thicknesses: [...cols].sort((a, b) => Number(a) - Number(b)),
+    thicknesses: Object.keys(colTotals).sort((a, b) => Number(a) - Number(b)),
+    // Per thickness, for the Total row of the By FM / MM / SM tab's block layout.
+    colTotals,
     total,
   }
 }
