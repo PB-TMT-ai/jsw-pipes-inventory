@@ -4373,7 +4373,7 @@ const SALES_GRID_SHOW = [
 const FM_MM_SM_NAME = 'FM / MM / SM'
 const FM_MM_SM_CHIP = { key: 'fmMmSm', label: `${FM_MM_SM_NAME} view`, tagged: true,
   measures: ['closing', 'dispatch', 'pending', 'required'].map(k => SALES_GRID_MEASURES.find(m => m.key === k)) }
-// By FM / MM / SM tab (#381) only: the "all measures" chip — per thickness, FG days of cover, Blended monthly
+// By FM / MM / SM tab (#381) only: the "all measures" chip — one block each for FG days of cover, Blended monthly
 // rate, Current inventory (the SKU's own, region-wide, as of today), then Pending to Dispatch and Production
 // required (the cell's, under the filters). `rowFigures` = the two SKU figures read off `fmMmSmTagSections`.
 const FM_MM_SM_ALL_CHIP = { key: 'fmMmSmAll', label: 'All measures', tagged: true, rowFigures: true,
@@ -4389,14 +4389,15 @@ const FM_MM_SM_TAG_TIP = `${FM_MM_SM_NAME} and FG days of cover (blended) — as
 // One tag cell of the FM / MM / SM view: `fmMmSmCellLabel`'s text in Planning's cover pill (COVER_PILL), the
 // bracket word on hover (owner, 17-Nov-2026: narrow cells print number + tag). Nothing is computed here.
 // `cellKey` / `found` (#380): the cell a Make next · Stock stuck row finds, ringed while `found`.
-function FmMmSmCell({ label, td, cellKey, found = false }) {
+// `edge` = the left rule; off inside a block of the By FM / MM / SM tab, where only a block's first thickness has it.
+function FmMmSmCell({ label, td, cellKey, found = false, edge = true }) {
   const look = label.kind === 'days' ? `rounded-full px-1.5 py-px ${COVER_PILL[label.bracket] || ''}`
     : label.kind === 'none' ? `rounded px-1.5 py-px ${MOVES_CHIP['No sales']}`
     : label.kind === 'multi' ? 'text-amber-600 dark:text-amber-400 font-medium'
     : 'text-slate-400 dark:text-slate-500'
   return (
     <td title={label.title} data-cell-key={cellKey} data-found={found ? 'true' : undefined}
-      className={`${td} text-left whitespace-nowrap border-l-2 border-slate-300 dark:border-slate-600 ${found ? 'ring-2 ring-inset ring-indigo-500 bg-indigo-50 dark:bg-indigo-950' : ''}`}>
+      className={`${td} text-left whitespace-nowrap ${edge ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${found ? 'ring-2 ring-inset ring-indigo-500 bg-indigo-50 dark:bg-indigo-950' : ''}`}>
       <span data-fm-mm-sm-cell={label.kind} data-cover={label.word || undefined} className={`inline-flex items-center gap-1 leading-tight tabular-nums ${look}`}>
         {label.kind === 'days' && label.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
         {label.text}
@@ -4461,15 +4462,62 @@ function FmMmSmCheck({ join, region, from, to, plantScoped = false }) {
     </div>
   )
 }
-// By FM / MM / SM tab (#381): a region's grid as stacked sections, one per tag, then Not tagged / Outside the
-// plan — stacked, never side by side, so 1366 px cuts no column. Each section is the tagged layout (one group
-// per thickness, then Total) over its own cells; the sections add up to the region's grid (`fmMmSmTagSections`).
-// Under All measures a group is FG days of cover, Blended monthly rate, Current inventory, Pending to Dispatch,
-// Production required; No sales drops the days and the rate and keeps the rest. Nothing is computed here.
-function FmMmSmTagSectionsView({ sections, region, chip, required, stockKnown, blockLabel }) {
+// By FM / MM / SM tab: the Sales Dashboard's layout (owner, 18-Nov-2026) — one block per figure, the thicknesses
+// inside it, then the block's Total; FG days of cover has no Total (days do not add up). Section and Size pinned.
+// `blocks`: [{ key, label, tip, tone, cell(r, t, edge) → <td>, total?(r) → number }]. Nothing is computed here.
+const FM_MM_SM_EDGE = 'border-l-2 border-slate-300 dark:border-slate-600'
+const FM_MM_SM_DAYS_TONE = 'bg-slate-100 dark:bg-slate-800'
+function FmMmSmBlockTable({ name, thicknesses, rows, blocks }) {
   const th = 'px-1.5 py-0.5 font-semibold whitespace-nowrap'
   const td = 'px-1.5 py-0.5'
-  const wrapTh = 'px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom min-w-[3.25rem] max-w-[4.5rem] text-right'
+  const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
+  return (
+    <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+      <table className="min-w-full text-xs" aria-label={name}>
+        <thead className="sticky top-0 z-10">
+          <tr className="text-slate-600 dark:text-slate-200">
+            <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
+            <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+            {blocks.map(b => <th key={b.key} colSpan={thicknesses.length + (b.total ? 1 : 0)} title={b.tip} className={`${th} text-center ${FM_MM_SM_EDGE} ${b.tone}`}>{b.label}</th>)}
+          </tr>
+          <tr className="text-slate-600 dark:text-slate-200">
+            {blocks.map(b => (
+              <React.Fragment key={b.key}>
+                {thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : FM_MM_SM_EDGE} ${b.tone}`}>{gridThk(t)}</th>)}
+                {b.total && <th className={`${th} text-right ${thicknesses.length ? '' : FM_MM_SM_EDGE} ${b.tone}`}>Total</th>}
+              </React.Fragment>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+              <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
+              <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+              {blocks.map(b => (
+                <React.Fragment key={b.key}>
+                  {thicknesses.map((t, i) => <React.Fragment key={t}>{b.cell(r, t, i ? '' : FM_MM_SM_EDGE)}</React.Fragment>)}
+                  {b.total && (() => {
+                    const v = b.total(r)
+                    return <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${thicknesses.length ? '' : FM_MM_SM_EDGE} ${red(v)}`}>{gridCell(v)}</td>
+                  })()}
+                </React.Fragment>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+// By FM / MM / SM tab (#381): a region's grid as stacked sections, one per tag, then Not tagged / Outside the
+// plan — stacked, never side by side, so 1366 px cuts no column. Each section is drawn in blocks
+// (`FmMmSmBlockTable`) over its own cells; the sections add up to the region's grid (`fmMmSmTagSections`).
+// Under All measures the blocks are FG days of cover, Blended monthly rate, Current inventory, Pending to Dispatch,
+// Production required; No sales drops the days and the rate and keeps the rest. Nothing is computed here.
+function FmMmSmTagSectionsView({ sections, region, chip, required, stockKnown, blockLabel }) {
+  const td = 'px-1.5 py-0.5'
+  const num = `${td} text-right tabular-nums whitespace-nowrap`
   const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
   const asOfTip = `${region}-wide, as of today — the SKU’s own figure, as on the Production Planning columns; the Plant filter and From / To do not change it.`
   return (
@@ -4482,7 +4530,6 @@ function FmMmSmTagSectionsView({ sections, region, chip, required, stockKnown, b
           ...(chip.rowFigures && s.rate ? [{ key: 'rate', label: 'Blended monthly rate', tip: `T a month. ${asOfTip}`, tone: 'bg-emerald-50 dark:bg-emerald-900/30' }] : []),
           ...(chip.rowFigures ? [{ key: 'inventory', label: 'Current inventory', tip: `T, stock now. ${asOfTip}`, tone: 'bg-amber-50 dark:bg-amber-900/30' }] : []),
         ]
-        const colsPerThickness = (s.days ? 1 : 0) + skuFigures.length + chip.measures.length
         const rows = [...pivot.rows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
         const cellCount = new Set(s.lines.map(l => `${l.section}|${l.size}|${l.stdThickness ?? ''}`)).size
         // The heading's only SKU count is `s.count`, region-wide and as of today (#384 item 8); what follows the
@@ -4490,6 +4537,19 @@ function FmMmSmTagSectionsView({ sections, region, chip, required, stockKnown, b
         const tagCells = new Set(s.skus.map(r => r.cellKey)).size
         const sizeFig = (r, k) => r.isTotal ? s.totals[k] : s.sizeTotals[`${r.section}|${r.size}`]?.[k] ?? 0
         const colFig = (t, k) => Object.entries(s.figures).filter(([key]) => key.endsWith(`|${t}`)).reduce((a, [, f]) => a + f[k], 0)
+        const blocks = [
+          ...(s.days ? [{ key: 'days', label: `FG days of cover · ${FM_MM_SM_NAME}`, tip: FM_MM_SM_TAG_TIP, tone: FM_MM_SM_DAYS_TONE,
+            cell: (r, t, edge) => r.isTotal || !r.cells[t] ? <td className={`${td} ${edge}`} />
+              : <FmMmSmCell td={td} edge={!!edge} label={fmMmSmCellLabel(onCell[`${r.section}|${r.size}|${t}`] || [])} /> }] : []),
+          ...skuFigures.map(m => ({ ...m, cell: (r, t, edge) => <td className={`${num} ${edge}`}>{gridCell(r.isTotal ? colFig(t, m.key) : s.figures[`${r.section}|${r.size}|${t}`]?.[m.key] ?? 0)}</td>,
+            total: r => sizeFig(r, m.key) })),
+          ...chip.measures.map(m => ({ key: m.key, label: blockLabel(m), tip: m.tip, tone: SALES_GRID_TONE[m.key],
+            cell: (r, t, edge) => {
+              const v = r.cells[t]?.[m.key] ?? (stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
+              return <td className={`${num} ${edge} ${red(v)}`}>{gridCell(v)}</td>
+            },
+            total: r => r.total[m.key] })),
+        ]
         return (
           <section key={s.key} aria-label={`${s.label} · ${region}`} data-fm-mm-sm-section={s.key}>
             <div className="flex flex-wrap items-baseline gap-x-3 mb-1">
@@ -4503,57 +4563,7 @@ function FmMmSmTagSectionsView({ sections, region, chip, required, stockKnown, b
               </span>
             </div>
             {!s.lines.length ? <p className="text-xs text-slate-400 py-2">{s.key === 'outside' ? 'Every cell on the grid carries one tag.' : `No ${s.label} SKU has a cell on the grid here.`}</p> : (
-              <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-                <table className="min-w-full text-xs" aria-label={`Sales by size and thickness · ${region} · ${s.label}`}>
-                  <thead className="sticky top-0 z-10">
-                    <tr className="text-slate-600 dark:text-slate-200">
-                      <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
-                      <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
-                      {pivot.thicknesses.map(t => <th key={t} colSpan={colsPerThickness} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{gridThk(t)} mm</th>)}
-                      <th colSpan={skuFigures.length + chip.measures.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>Total</th>
-                    </tr>
-                    <tr className="text-slate-600 dark:text-slate-200">
-                      {[...pivot.thicknesses, 'total'].map(t => (
-                        <React.Fragment key={t}>
-                          {t !== 'total' && s.days && <th title={FM_MM_SM_TAG_TIP} className="px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom text-left border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800">FG days of cover · {FM_MM_SM_NAME}</th>}
-                          {[...skuFigures, ...chip.measures].map((m, i) => (
-                            <th key={m.key} title={m.tip || blockLabel(m)} className={`${wrapTh} ${!i && (t === 'total' || !s.days) ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${m.tone || SALES_GRID_TONE[m.key]}`}>{m.label}</th>
-                          ))}
-                        </React.Fragment>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map(r => (
-                      <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
-                        <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
-                        <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
-                        {pivot.thicknesses.map(t => {
-                          const key = `${r.section}|${r.size}|${t}`
-                          return (
-                            <React.Fragment key={t}>
-                              {s.days && (r.isTotal || !r.cells[t]
-                                ? <td className={`${td} border-l-2 border-slate-300 dark:border-slate-600`} />
-                                : <FmMmSmCell td={td} label={fmMmSmCellLabel(onCell[key] || [])} />)}
-                              {skuFigures.map((m, i) => (
-                                <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap ${!i && !s.days ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''}`}>
-                                  {gridCell(r.isTotal ? colFig(t, m.key) : s.figures[key]?.[m.key] ?? 0)}
-                                </td>
-                              ))}
-                              {chip.measures.map((m, i) => {
-                                const v = r.cells[t]?.[m.key] ?? (stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
-                                return <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap ${!i && !s.days && !skuFigures.length ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${red(v)}`}>{gridCell(v)}</td>
-                              })}
-                            </React.Fragment>
-                          )
-                        })}
-                        {skuFigures.map((m, i) => <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(sizeFig(r, m.key))}</td>)}
-                        {chip.measures.map((m, i) => <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${i || skuFigures.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>)}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <FmMmSmBlockTable name={`Sales by size and thickness · ${region} · ${s.label}`} thicknesses={pivot.thicknesses} rows={rows} blocks={blocks} />
             )}
           </section>
         )
@@ -4579,13 +4589,28 @@ const FM_MM_SM_RAW_MEASURES = [['required', 'Production required', SALES_GRID_TO
 const fmMmSmRawShareTip = (c) => `Shared slit coil, split between the sizes it fits (display only; method confirmed by the plant, 18-Nov-2026): ${
   c.shares.map(s => `${fmtT(s.weight)} T from ${s.name}’s coil that fits ${s.sizes.map(gridSize).join(', ')}`).join('; ')}`
 // One raw-material grid: the split's cells laid out by `fmMmSmRawRows`, cut by the Section / Size / Thickness filters.
-function FmMmSmRawTable({ raw, name, cut, landed, empty }) {
+// `byBlocks` (By FM / MM / SM tab only): drawn in the Dashboard's blocks (`FmMmSmBlockTable`); elsewhere one group per thickness.
+function FmMmSmRawTable({ raw, name, cut, landed, empty, byBlocks = false }) {
   const g = fmMmSmRawRows(raw, cut)
   const th = 'px-1.5 py-0.5 font-semibold whitespace-nowrap'
   const td = 'px-1.5 py-0.5'
   const hd = 'px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom min-w-[3.25rem] max-w-[4.5rem] text-right'
   const rows = [...g.rows, { section: '', size: 'Total', cells: {}, total: g.total, isTotal: true }]
   if (!g.rows.length) return <p className="text-sm text-slate-400 py-2 text-center">{empty}</p>
+  if (byBlocks) return (
+    <FmMmSmBlockTable name={name} thicknesses={g.thicknesses} rows={rows} blocks={[
+      { key: 'days', label: `FG days of cover · ${FM_MM_SM_NAME}`, tip: FM_MM_SM_TAG_TIP, tone: FM_MM_SM_DAYS_TONE,
+        cell: (r, k, edge) => r.isTotal || !r.cells[k] ? <td className={`${td} ${edge}`} />
+          : <FmMmSmCell td={td} edge={!!edge} label={fmMmSmCellLabel(landed[`${r.section}|${r.size}|${k}`] || [])} cellKey={`${r.section}|${r.size}|${k}`} /> },
+      ...FM_MM_SM_RAW_MEASURES.map(([m, label, tone]) => ({ key: m, label, tone, total: r => r.total[m],
+        cell: (r, k, edge) => {
+          const c = r.isTotal ? g.colTotals[k] : r.cells[k]
+          const sharedMark = m === 'available' && c?.shared
+          return <td data-raw-shared={sharedMark ? 'true' : undefined} title={sharedMark ? fmMmSmRawShareTip(c) : undefined}
+            className={`${td} text-right tabular-nums whitespace-nowrap ${edge} ${sharedMark ? 'underline decoration-dotted cursor-help' : ''}`}>{c ? gridCell(c[m]) : ''}</td>
+        } })),
+    ]} />
+  )
   return (
     <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
       <table className="min-w-full text-xs" aria-label={name}>
@@ -4649,7 +4674,7 @@ function FmMmSmRawView({ raw, region, to, cut, landed, sections = null }) {
               <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-1">
                 {s.key === 'outside' ? s.label : <span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[s.key]}`}>{s.label}</span>}
               </h4>
-              <FmMmSmRawTable raw={s.raw} name={`${name} · ${s.label}`} cut={cut} landed={landed}
+              <FmMmSmRawTable raw={s.raw} name={`${name} · ${s.label}`} cut={cut} landed={landed} byBlocks
                 empty={`No raw material and no Production required on the ${s.label} cells for these filters.`} />
             </section>
           ))}

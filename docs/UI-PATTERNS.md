@@ -1058,13 +1058,20 @@ App.jsx only print `row.moves` / `row.cover`.
   only by Section / Size / Thickness, never by a plant or the dates. M counts **cells**, not SKUs, because it follows the Plant
   filter and From / To (#384 item 8: every SKU count is region-wide and as of today). Tables are named `Sales by size and thickness ·
   South · FM` and so on; sections carry `data-fm-mm-sm-section` (`FM` … `outside`).
-  - **Show chip *All measures*** (this tab only, second after *FM / MM / SM view*, which stays the default): per thickness, FG days
+  - **Layout: the Sales Dashboard's blocks** (owner, 18-Nov-2026 — "divided normally as the sales dashboard"). Every section
+    grid on this tab, under all three of its chips, is drawn by `FmMmSmBlockTable`: Section × Size down the rows, Total last;
+    across, **one block per figure** (header = the figure, e.g. *Closing stock · 18-Nov-2026*), the thicknesses inside it, then
+    the block's **Total**. **FG days of cover** is the first block and has **no Total** (days do not add up); its cells keep the
+    pill. *FM / MM / SM view*: FG days of cover, Closing stock, Dispatch, Pending to Dispatch, Production required. Only this tab:
+    the single tagged grid on Status key and Make next keeps one group per thickness (owner: "stick to what is required").
+  - **Show chip *All measures*** (this tab only, second after *FM / MM / SM view*, which stays the default): blocks FG days
     of cover, **Blended monthly rate**, **Current inventory** (the SKU's own figures, region-wide, as of today — summed per cell, size
-    and section), **Pending to Dispatch**, **Production required** (the cell's, under the filters and dates); Total group: rate,
-    inventory, Pending, Required. Leaving the tab with it on falls back to *FM / MM / SM view*.
-  - **No sales** drops the days column and the rate column under either chip, and keeps Current inventory, its orders (Pending to
+    and section), **Pending to Dispatch**, **Production required** (the cell's, under the filters and dates), each with its Total
+    but the days. Leaving the tab with it on falls back to *FM / MM / SM view*.
+  - **No sales** drops the days block and the rate block under either chip, and keeps Current inventory, its orders (Pending to
     Dispatch) and Production required.
-  - **Raw material** stacks the same five sections (`fmMmSmRawBySection` over `fmMmSmTagSections`; sections
+  - **Raw material** stacks the same five sections in blocks (FG days of cover, Production required, Raw material available, Raw
+    material required; `FmMmSmRawTable`'s `byBlocks`, the Total row per thickness from `fmMmSmRawRows`' `colTotals`) (`fmMmSmRawBySection` over `fmMmSmTagSections`; sections
     `data-fm-mm-sm-raw-section`, tables `Raw material by size and thickness · South · No sales` and so on), so *No sales* keeps its
     raw material figures. A split cell no section's line sits on goes to *Not tagged / Outside the plan*. The note, footnote and
     *Raw material by plant* table are drawn once, under the sections.

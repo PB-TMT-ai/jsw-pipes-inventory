@@ -40,8 +40,16 @@ const openBy = async (page) => {
   await expect(block(page, 'South')).toBeVisible()
 }
 const sectionTable = (page, region, label) => block(page, region).getByRole('table', { name: `Sales by size and thickness · ${region} · ${label}`, exact: true })
-const headers = (table) => table.locator('thead tr').nth(1).locator('th').allInnerTexts()
+// The blocks' titles, left to right (the first header row bar Section and Size): the Sales Dashboard's layout.
+const blockTitles = async (table) => (await table.locator('thead tr').first().locator('th').allInnerTexts()).slice(2)
 const totalRow = (table) => table.locator('tbody tr').last().locator('td').allInnerTexts()
+// A row's figure in the Total column of the block whose title starts with `title` (the block's last column).
+const blockTotal = async (table, cells, title) => {
+  const spans = await table.locator('thead tr').first().locator('th').evaluateAll(els => els.map(e => [e.innerText, e.colSpan]))
+  let end = -1
+  for (const [text, span] of spans) { end += span; if (text.startsWith(title)) return cells[end] }
+  throw new Error(`no block ${title}`)
+}
 
 test('the By tab’s grid is the four tag sections and Not tagged / Outside the plan, stacked, in each region', async ({ page }) => {
   await signIn(page, 'admin', { rows })
@@ -72,20 +80,24 @@ test('All measures: FG days of cover, Blended monthly rate, Current inventory, P
   const b = block(page, 'South')
   await b.getByRole('button', { name: 'All measures', exact: true }).click()
   await expect(b.getByRole('button', { name: 'All measures', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  const fmHead = await headers(sectionTable(page, 'South', 'FM'))
-  expect(fmHead.slice(0, 5)).toEqual(['FG days of cover · FM / MM / SM', 'Blended monthly rate', 'Current inventory', 'Pending to Dispatch', 'Production required'])
-  const nsHead = await headers(sectionTable(page, 'South', 'No sales'))
-  expect(nsHead.slice(0, 3)).toEqual(['Current inventory', 'Pending to Dispatch', 'Production required'])
-  expect(nsHead.join('|')).not.toMatch(/FG days of cover|Blended monthly rate/)
-  // No sales keeps its orders: 4 T of 40x40 on order, nothing in stock → 4 T required
+  const fm = sectionTable(page, 'South', 'FM')
+  expect(await blockTitles(fm)).toEqual(['FG days of cover · FM / MM / SM', 'Blended monthly rate', 'Current inventory', 'Pending to Dispatch', 'Production required'])
+  // inside a block: the thicknesses, then Total — except FG days of cover, which has no Total
+  const sub = await fm.locator('thead tr').nth(1).locator('th').allInnerTexts()
+  expect(sub.filter(t => t === 'Total')).toHaveLength(4)
+  expect(sub.every(t => t === 'Total' || /^\d+\.\d$/.test(t))).toBe(true)
   const ns = sectionTable(page, 'South', 'No sales')
+  expect(await blockTitles(ns)).toEqual(['Current inventory', 'Pending to Dispatch', 'Production required'])
+  // No sales keeps its orders: 4 T of 40x40 on order, nothing in stock → 4 T required
   const total = await totalRow(ns)
-  expect(total.slice(-3)).toEqual(['', '4.0', '4.0'])
+  expect(await blockTotal(ns, total, 'Current inventory')).toBe('')
+  expect(await blockTotal(ns, total, 'Pending to Dispatch')).toBe('4.0')
+  expect(await blockTotal(ns, total, 'Production required')).toBe('4.0')
   await expect(b.getByText(/^\d+ SKUs? · \d+ cells? on this grid.*no days of cover or rate/)).toBeVisible()
   // FM's rate and inventory are figures, not blank
-  const fmTotal = await totalRow(sectionTable(page, 'South', 'FM'))
-  expect(Number(fmTotal.at(-4))).toBeGreaterThan(0)
-  expect(Number(fmTotal.at(-3))).toBeGreaterThan(0)
+  const fmTotal = await totalRow(fm)
+  expect(Number(await blockTotal(fm, fmTotal, 'Blended monthly rate'))).toBeGreaterThan(0)
+  expect(Number(await blockTotal(fm, fmTotal, 'Current inventory'))).toBeGreaterThan(0)
 })
 
 test('the sections add up to the region’s grid total, as the Tagged and not tagged table reads it', async ({ page }) => {
@@ -98,9 +110,9 @@ test('the sections add up to the region’s grid total, as the Tagged and not ta
     for (const s of await b.locator('[data-fm-mm-sm-section]').all()) {
       const t = s.getByRole('table')
       if (!await t.count()) continue
-      // FM / MM / SM view: Total = Closing, Dispatch, Pending to Dispatch, Production required
-      const cells = (await totalRow(t)).slice(-4, -1)
-      cells.forEach((v, i) => { sums[i] += Number(v || 0) })
+      // FM / MM / SM view: the Total columns of the Closing stock, Dispatch and Pending to Dispatch blocks
+      const row = await totalRow(t)
+      for (const [i, title] of ['Closing stock', 'Dispatch', 'Pending to Dispatch'].entries()) sums[i] += Number(await blockTotal(t, row, title) || 0)
     }
     ;[1, 2, 3].forEach(i => expect(sums[i - 1]).toBeCloseTo(Number(grid[i] || 0), 1))
   }
@@ -153,8 +165,14 @@ test('the Raw material chip stacks the same sections; No sales keeps its raw mat
   expect(order).toEqual(['FM', 'MM', 'SM', 'No sales', 'Not tagged / Outside the plan'].map(l => `Raw material · ${l} · South`))
   // the 40x40 on order, no stock and no coil: 4 T Production required, all of it still Raw material required
   const ns = b.getByRole('table', { name: 'Raw material by size and thickness · South · No sales', exact: true })
+  expect(await blockTitles(ns)).toEqual(['FG days of cover · FM / MM / SM', 'Production required', 'Raw material available', 'Raw material required'])
   const row = await ns.locator('tbody tr', { hasText: '40×40' }).locator('td').allInnerTexts()
-  expect(row.slice(-3)).toEqual(['4.0', '', '4.0'])
+  expect(await blockTotal(ns, row, 'Production required')).toBe('4.0')
+  expect(await blockTotal(ns, row, 'Raw material available')).toBe('')
+  expect(await blockTotal(ns, row, 'Raw material required')).toBe('4.0')
+  // the Total row carries each thickness's figure too, as on the Dashboard
+  const tot = await totalRow(ns)
+  expect(tot.filter(v => v === '4.0').length).toBeGreaterThanOrEqual(4)
   // the whole-grid table is replaced, not drawn as well
   await expect(b.getByRole('table', { name: 'Raw material by size and thickness · South', exact: true })).toHaveCount(0)
   await expect(b.getByText(/plant confirmed this method/).first()).toBeVisible()
