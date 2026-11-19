@@ -5021,6 +5021,56 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   const areaPlants = pickedNames.length ? pickedNames : (scope.stockRegions || []).filter(r => r !== UNMAPPED_REGION)
     .flatMap(r => [...plantsServingRegion(r, plantMaster(plants))]).map(id => plantLabel(id))
 
+  // FG age (#392): the Dashboard draws it open under the grid; the FM / MM / SM sub-tab folds it (open by itself on Make next · Stock stuck).
+  const ageHead = (
+      <div className="mt-5 mb-2 flex items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">FG age · as of {fmtIso(to)}</h3>
+        <span className="text-xs text-slate-500 dark:text-slate-400">days since production, of the stock still on hand</span>
+        {!hideExport && <span className="ml-auto"><Btn size="sm" variant="ghost" disabled={!ageLines.length} onClick={downloadAgeing}>⬇ CSV</Btn></span>}
+      </div>
+  )
+  const ageBody = (
+      !ageLines.length ? <p className="text-sm text-slate-400 py-4 text-center">No finished stock on hand for these filters.</p> : (
+        <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+          <table className="min-w-full text-xs" aria-label={named('FG age by size and thickness')}>
+            <thead className="sticky top-0 z-10">
+              <tr className="text-slate-600 dark:text-slate-200">
+                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
+                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+                {SALES_GRID_AGEING.map(m => <th key={m.key} colSpan={agePivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{m.label}</th>)}
+              </tr>
+              <tr className="text-slate-600 dark:text-slate-200">
+                {SALES_GRID_AGEING.map(m => (
+                  <React.Fragment key={m.key}>
+                    {agePivot.thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>{gridThk(t)}</th>)}
+                    <th className={`${th} text-right ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>Total</th>
+                  </React.Fragment>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ageRows.map(r => (
+                <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                  <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                  <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+                  {SALES_GRID_AGEING.map(m => (
+                    <React.Fragment key={m.key}>
+                      {agePivot.thicknesses.map((t, i) => {
+                        const v = r.cells[t]?.[m.key] ?? (gridRun.stockKnown ? 0 : null)
+                        return <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(v)}</td>
+                      })}
+                      <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(r.total[m.key])}</td>
+                    </React.Fragment>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+  )
+  const age75 = agePivot.total.total.age3
+
   const gridSection = (
     <Section title={`Size × Thickness — ${title}`} actions={hideExport ? null : <Btn size="sm" variant="ghost" disabled={view === 'check' ? !checkLines.length : view === 'grid' ? gridEmpty : !lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
       <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -5234,49 +5284,16 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
           </div>
         )}
 
-      <div className="mt-5 mb-2 flex items-center gap-2">
-        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">FG age · as of {fmtIso(to)}</h3>
-        <span className="text-xs text-slate-500 dark:text-slate-400">days since production, of the stock still on hand</span>
-        {!hideExport && <span className="ml-auto"><Btn size="sm" variant="ghost" disabled={!ageLines.length} onClick={downloadAgeing}>⬇ CSV</Btn></span>}
-      </div>
-      {!ageLines.length ? <p className="text-sm text-slate-400 py-4 text-center">No finished stock on hand for these filters.</p> : (
-        <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-          <table className="min-w-full text-xs" aria-label={named('FG age by size and thickness')}>
-            <thead className="sticky top-0 z-10">
-              <tr className="text-slate-600 dark:text-slate-200">
-                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
-                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
-                {SALES_GRID_AGEING.map(m => <th key={m.key} colSpan={agePivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{m.label}</th>)}
-              </tr>
-              <tr className="text-slate-600 dark:text-slate-200">
-                {SALES_GRID_AGEING.map(m => (
-                  <React.Fragment key={m.key}>
-                    {agePivot.thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>{gridThk(t)}</th>)}
-                    <th className={`${th} text-right ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>Total</th>
-                  </React.Fragment>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {ageRows.map(r => (
-                <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
-                  <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
-                  <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
-                  {SALES_GRID_AGEING.map(m => (
-                    <React.Fragment key={m.key}>
-                      {agePivot.thicknesses.map((t, i) => {
-                        const v = r.cells[t]?.[m.key] ?? (gridRun.stockKnown ? 0 : null)
-                        return <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(v)}</td>
-                      })}
-                      <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(r.total[m.key])}</td>
-                    </React.Fragment>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/* #392: starts folded, open by itself on Make next · Stock stuck (`worklists`); the key re-sets it when the tab changes. */}
+      {tagRows ? (
+        <details key={worklists ? 'open' : 'folded'} className="mt-5" open={worklists}>
+          <summary className="cursor-pointer select-none text-sm font-semibold text-slate-800 dark:text-slate-100">
+            FG age · as of {fmtIso(to)} <span className="ml-2 font-normal text-slate-600 dark:text-slate-300 tabular-nums">75+ d: {gridCell(age75)} T</span>
+          </summary>
+          <p className="mt-1 mb-2 text-xs text-slate-500 dark:text-slate-400">days since production, of the stock still on hand</p>
+          {ageBody}
+        </details>
+      ) : <>{ageHead}{ageBody}</>}
 
       {/* The reading guide, folded: every rule stays one click away, and the amber warnings below stay open. */}
       <details className="mt-2 text-xs text-slate-500 dark:text-slate-400">

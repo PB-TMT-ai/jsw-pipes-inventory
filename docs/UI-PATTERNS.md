@@ -1028,7 +1028,9 @@ App.jsx only print `row.moves` / `row.cover`.
   region the block says so in amber (its figures read empty; the tags and the region line stay). The tag column's header tooltip says
   "as of today".
 - **Views.** All three of the Dashboard's views stay in each block — *Size × Thickness*, *Production check*, *SKU list* — then
-  the *FG age* grid. Tag and cover show only in *Size × Thickness*; *Production check* and *SKU list* are the Dashboard's own for that
+  the *FG age* grid, **folded** (#392, owner 19-Nov-2026): the fold line reads *FG age · as of <To date>* and carries the **75+ d** total for
+  the grid's filters (the table's own 75+ d Total); one click opens the table, unchanged. It starts **open** on Make next · Stock stuck
+  (a `<details>` keyed by `worklists`). The Dashboard's FG age table is unchanged, always open. Tag and cover show only in *Size × Thickness*; *Production check* and *SKU list* are the Dashboard's own for that
   region (an e2e test compares them, table text against table text, with the Dashboard's Region filter on the same region).
 - **Show chips (#391, owner 19-Nov-2026).** In front, as buttons: **FM / MM / SM view** (the default), **All measures** (By FM / MM / SM tab
   only) and **Raw material**. The Dashboard's chips — *All, Stock flow, Sales, Opening stock, Production, Dispatch, Closing stock,

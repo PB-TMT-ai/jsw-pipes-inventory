@@ -162,6 +162,7 @@ test('each block ends with the FG age grid, the Not tagged row and the SKUs not 
   for (const region of ['South', 'West']) {
     await showRegion(page, region)
     const b = block(page, region)
+    await b.getByText(/^FG age · as of/).click()   // folded on this tab (#392): open it first
     await expect(b.getByRole('table', { name: `FG age by size and thickness · ${region}` })).toBeVisible()
     const check = b.getByRole('table', { name: `Tagged and not tagged · ${region}` })
     await expect(check.locator('tbody tr')).toHaveCount(3)
@@ -348,4 +349,32 @@ test('each block shows its own chips in front and the Dashboard’s eleven under
   await expect(b.getByRole('table', { name: 'Sales by size and thickness · South', exact: true })).toBeVisible()  // the Dashboard's grid, whole
   await b.getByRole('button', { name: 'Raw material', exact: true }).click()
   await expect(more).toHaveAttribute('aria-pressed', 'false')
+})
+
+// ── #392: the FG age table is folded on the sub-tab, open by itself on Make next · Stock stuck ──
+test('FG age starts folded with its 75+ d total; open on Make next · Stock stuck; the Dashboard’s is unchanged', async ({ page }) => {
+  await signIn(page, 'admin', { rows })
+  await openSubTab(page)
+  const b = block(page, 'South')
+  const age = b.getByRole('table', { name: 'FG age by size and thickness · South' })
+  const sum = b.locator('summary', { hasText: 'FG age · as of' })
+  await expect(sum).toContainText(/FG age · as of \d{2}-[A-Za-z]{3}-\d{4}/)
+  await expect(sum).toContainText(/75\+ d: [\d.,-]+ T/)
+  await expect(age).toBeHidden()                                   // folded on Status key
+  await sum.click()
+  await expect(age).toBeVisible()
+  // the fold line's figure is the table's own 75+ d Total
+  const heads = await age.locator('thead tr').first().locator('th').evaluateAll(els => els.map(e => [e.innerText, e.colSpan]))
+  let end = -1, col = -1
+  for (const [text, span] of heads.slice(2)) { end += span; if (text.startsWith('75+')) { col = end + 2; break } }
+  const total = await age.locator('tbody tr').last().locator('td').allInnerTexts()
+  const fig = (await sum.innerText()).match(/75\+ d: (\S+) T/)[1]
+  expect(total[col]).toBe(fig)
+  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'Make next · Stock stuck', exact: true }).click()
+  await expect(age).toBeVisible()                                   // open by itself here
+  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'By FM / MM / SM', exact: true }).click()
+  await expect(age).toBeHidden()
+  await strip(page).getByRole('button', { name: 'Sales Dashboard', exact: true }).click()
+  await expect(page.getByRole('table', { name: 'FG age by size and thickness' })).toBeVisible()
+  await expect(page.locator('summary', { hasText: 'FG age · as of' })).toHaveCount(0)
 })
