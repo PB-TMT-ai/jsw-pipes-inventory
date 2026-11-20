@@ -1,0 +1,51 @@
+*JSW Pipes & Tubes — Daily Update*
+📅 06-Nov-2026
+
+*🚚 Invoiced*
+• Invoiced MTD · Hyderabad, Lepakshi, Tapi: 221.7 T
+• Best Estimate (Nov): 4000.0 T — 6% achieved
+• Daily Run Rate Reqd: 151.1 T
+• Prev Month (same days): 353.5 T
+• Dispatch D-1: 112.0 T
+• Dispatch Today: 0 T _(today's invoices not loaded yet)_
+
+*🗺️ Invoiced by Region*
+• South: 193.0 T
+• West: 28.7 T
+*Total: 221.7 T*
+
+*🏭 Production* _(MTD | D-1)_
+• Hyderabad: 121.5 T | 35.0 T
+• NPMD: 0 T | 0 T
+• Lepakshi: 41.0 T | 0 T
+• Tapi: 65.7 T | 0 T
+*Total MTD: 228.3 T* _(prev month same days 786.8 T)_
+• Target (Nov): 5000.0 T — 5% achieved
+• Daily Run Rate Reqd: 190.9 T
+
+*📦 Orders*
+• Indent: 823.0 T
+• Current Month: 355.0 T
+• Confirmed (pending invoice): 78.1 T
+• Servable – Unconfirmed: 166.5 T
+• Pending to Dispatch: 244.6 T
+_Servable – Unconfirmed = stock is on the floor, only the confirmation is awaited. Pending to Dispatch = Confirmed + Servable – Unconfirmed._
+
+*🗺️ Orders by Region* _(Servable – Unconfirmed | Pending to Dispatch)_
+• South: 74.0 T | 100.0 T
+• West: 92.6 T | 144.6 T
+*Total: 166.5 T | 244.6 T*
+
+*📦 Inventory* _(Finished Pipe | RM)_
+• Hyderabad: 561.8 T | 646.1 T
+• NPMD: 724.6 T | 441.9 T
+• Lepakshi: 312.8 T | 300.7 T
+• Tapi: 874.9 T | 269.1 T
+*Total: 2474.1 T | 1657.7 T*
+
+*📝 Orders Logged*
+• Today: 0 T _(not loaded yet)_
+• D-1: 159.0 T
+• D-2: 51.0 T
+
+_Live data · generated 06-Nov-2026_

@@ -1,0 +1,8 @@
+{
+ "file": "reports/daily-whatsapp-2026-11-13.txt",
+ "sha256": "1ae664713dedd3389ed17699207de492ddd4805e756056dba89b351cca5fd185",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 43 figures recomputed from live DB (SELECT-only) match to 1 dp; data current (no rows created after 07:08 UTC build); servable uses region-pooled floor per ALGORITHMS/ADR-0009",
+ "at": "2026-11-13T07:15:38+00:00"
+}

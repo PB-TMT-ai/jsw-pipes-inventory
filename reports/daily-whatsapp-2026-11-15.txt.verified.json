@@ -1,0 +1,8 @@
+{
+ "file": "reports/daily-whatsapp-2026-11-15.txt",
+ "sha256": "eeb5417d7ee0329efec31d1c83768dbbcc0a87a0dbbf4611f4134b9fabb0cbe6",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "47/47 figures recomputed from live DB (07:04 UTC 15-Nov), all within 0.05 T / whole-% rounding; data current to 06:55 UTC upload; no rule change in overnight docs merge",
+ "at": "2026-11-15T07:04:08+00:00"
+}

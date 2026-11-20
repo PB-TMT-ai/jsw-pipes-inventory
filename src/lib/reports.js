@@ -435,7 +435,7 @@ export { buildPlantMtdSummary, buildServableSummary }
 // DIFFERENT and larger number, and having both in circulation is how a card and a message start
 // disagreeing about the same steel.
 export function buildPlantPipelineSummary(productions, dispatches, coils, babyCoils, {
-  date = today(), master = PLANTS,
+  date = today(), master = PLANTS, skus = null,
 } = {}) {
   const D = date, MONTH = dashMonthKey(D), PREV = dashPrevMonth(D), DAY = dashDay(D)
   const D1 = dashShift(D, -1)
@@ -481,7 +481,12 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
   plantKeysIn(liveCoils).forEach(k => keys.add(k))
   plantKeysIn(liveBabies).forEach(k => keys.add(k))
 
+  // FG STOCK pools by the SAME physical identity the Dashboard's Inventory overview uses
+  // (`inventoryOverview` → `producedPool(…, skuKeyResolver(skus))`), so a size produced under a typed
+  // code and invoiced under its ERP MM ID nets as one pipe. Without `skus` it keys by raw code.
+  const skuKey = skuKeyResolver(skus || [])
   const byRow = new Map()
+  const pooled = new Map()   // row id → { prod, entries }: pooled per ROW, after Unattributed folding
   ;[...keys].forEach(key => {
     const prod = filterByPlant(liveProd, key)
     const disp = filterDispatchesByPlant(liveDisp, key)
@@ -520,6 +525,27 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
     row.rmTotal = row.fullCoilLeft + row.babyLeft
     row.productionRows += prod.length
     byRow.set(id, row)
+    const pool = pooled.get(id) || { prod: [], entries: [] }
+    pool.prod.push(...prod)
+    disp.forEach(d => pool.entries.push(...(d.bundleEntries || [])))
+    pooled.set(id, pool)
+  })
+
+  // FG STOCK — the Dashboard Inventory overview's per-plant "FG" (#232, docs/ALGORITHMS.md):
+  // produced − invoiced pooled per plant AND per size, a size invoiced beyond its recorded production
+  // counted as 0 rather than as negative stock. What that floor drops is `dispatchedWithoutProduction`,
+  // so  fgStock − dispatchedWithoutProduction = fgLeft  on every row (checked below). `fgLeft` stays
+  // the netted figure the movement identity and the company card use; `fgStock` is what a plant row
+  // on the Dashboard shows. On 12-Nov-2026 Hyderabad was 663.0 T stock against 578.3 T netted.
+  byRow.forEach((row, id) => {
+    const { prod, entries } = pooled.get(id)
+    let fg = 0, dwop = 0
+    Object.values(producedPool(prod, [{ bundleEntries: entries }], null, skuKey)).forEach(e => {
+      const w = num(e.availableWeight)
+      if (w > 0) fg += w; else dwop -= w
+    })
+    row.fgStock = fg
+    row.dispatchedWithoutProduction = dwop
   })
 
   const rank = (id) => { const i = master.findIndex(p => p.id === id); return i < 0 ? master.length : i }
@@ -529,7 +555,8 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
   const totals = {
     producedMtd: sum('producedMtd'), producedPrev: sum('producedPrev'),
     producedD1: sum('producedD1'), producedD: sum('producedD'),
-    fgLeft: sum('fgLeft'), fullCoilLeft: sum('fullCoilLeft'),
+    fgLeft: sum('fgLeft'), fgStock: sum('fgStock'),
+    dispatchedWithoutProduction: sum('dispatchedWithoutProduction'), fullCoilLeft: sum('fullCoilLeft'),
     babyLeft: sum('babyLeft'), rmTotal: sum('rmTotal'),
     openingFg: sum('openingFg'), invoicedMtd: sum('invoicedMtd'),
   }
@@ -552,6 +579,7 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
   // Opening nor the MTD columns, so it is added back rather than left as an unexplained gap.
   const afterD = (r) => r.producedAfterD - r.invoicedAfterD
   const movementGap = (r) => diff(r.openingFg + r.producedMtd - r.invoicedMtd + afterD(r), r.fgLeft)
+  const stockBridgeGap = plants.reduce((m, r) => Math.max(m, diff(r.fgStock - r.dispatchedWithoutProduction, r.fgLeft)), 0)
   const maxMovementGap = plants.reduce((m, r) => Math.max(m, movementGap(r)),
     movementGap({ ...totals, producedAfterD: sum('producedAfterD'), invoicedAfterD: sum('invoicedAfterD') }))
 
@@ -569,6 +597,10 @@ export function buildPlantPipelineSummary(productions, dispatches, coils, babyCo
       // means the movement columns describe a different register from the FG figure above them.
       movementTiesToFgLeft: maxMovementGap <= 0.01,
       maxMovementGap,
+      // FG stock − Dispatched w/o production = FG Left, per plant: the floor moves tonnage between
+      // the two terms, it never creates or loses any.
+      fgStockBridgesToFgLeft: stockBridgeGap <= 0.01,
+      stockBridgeGap,
       maxAbsDiff,
       allPlantsProducedMtd: allProducedMtd,
       allPlantsFgLeft: allFgLeft,
@@ -758,7 +790,7 @@ export function buildMtdDashboardData(orders, dispatches, productions, skus, { d
   // slit mothers is read off `babyCoils`. Supply coils alone and every slit mother counts as stock
   // again — steel already cut up, re-reported as whole. That is a worse answer than "unknown".
   const rmKnown = coils != null && babyCoils != null
-  const pipelineRaw = buildPlantPipelineSummary(productions, dispatches, coils, babyCoils, { date: D })
+  const pipelineRaw = buildPlantPipelineSummary(productions, dispatches, coils, babyCoils, { date: D, skus })
   const blankRm = (o) => ({ ...o, fullCoilLeft: null, babyLeft: null, rmTotal: null })
   const pipeline = rmKnown ? pipelineRaw : {
     ...pipelineRaw,

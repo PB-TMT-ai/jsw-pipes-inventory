@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { buildFinishedStockData, buildRawMaterialData, buildMtdDashboardData, buildDistributorRegionData, buildRegionMtdSummary, buildPlantMtdSummary, buildServableSummary, buildPlantPipelineSummary,
   buildInventorySnapshotData, renderInventorySnapshotHtml, loadSnapshotBrandImages } from './reports'
-import { salesKpis, babyCoilStock, coilConsumption, resolveProductionWeights } from './calc'
+import { salesKpis, babyCoilStock, coilConsumption, resolveProductionWeights, inventoryOverview } from './calc'
 
 // ── Report A fixture ──
 const skus = [
@@ -1737,6 +1737,76 @@ describe('buildPlantPipelineSummary — production and stock by plant', () => {
     expect(p.checks.rmTiesToAllPlants).toBe(true)
     expect(p.totals.fullCoilLeft).toBeCloseTo(100)
     expect(p.totals.babyLeft).toBeCloseTo(babyCoilStock(ppBabies, coilConsumption(ppProductions, null, 'babyCoilId')))
+  })
+})
+
+// ── FG stock by plant = the Dashboard Inventory overview's FG (worked example, 12-Nov-2026) ────────
+// The daily WhatsApp message printed each plant's FG as produced − invoiced (Hyderabad 578.3 T) while
+// the Dashboard's Inventory overview read 663.0 T, and the user caught it. The Dashboard pools by
+// physical size and counts a size invoiced beyond its production as 0, not negative; what that floor
+// drops is "Dispatched w/o production" (84.7 T at Hyderabad that day). One size there was produced
+// under a typed code and invoiced under its ERP MM ID — pooled by raw code, Hyderabad read 1441.7 T.
+const fsSkus = [
+  { skuCode: 'RHS-100x50x2.00', productType: 'RHS', height: 100, breadth: 50, thickness: 2, length: 6000, weightPerTube: 28 },
+  { skuCode: '1140-13075-10074984', productType: 'RHS', height: 100, breadth: 50, thickness: 2, length: 6000, weightPerTube: 28 },
+  { skuCode: 'SHS-40x40x2.00', productType: 'SHS', height: 40, breadth: 40, thickness: 2, length: 6000, weightPerTube: 14 },
+]
+const fsProductions = [
+  { id: 'f1', plant: 'hyderabad', skuCode: 'RHS-100x50x2.00', dateOfProduction: '2026-11-02', totalWeight: 10 },
+  { id: 'f2', plant: 'npmd', skuCode: 'SHS-40x40x2.00', dateOfProduction: '2026-11-03', totalWeight: 6 },
+]
+const fsDispatches = [
+  { id: 'fd1', dateOfDispatch: '2026-11-04', bundleEntries: [
+    { skuCode: '1140-13075-10074984', plant: 'hyderabad', weight: 8 },   // same pipe as f1, ERP code
+    { skuCode: 'SHS-40x40x2.00', plant: 'hyderabad', weight: 3 },        // nothing produced at Hyderabad
+    { skuCode: 'SHS-40x40x2.00', plant: 'npmd', weight: 1 },
+  ] },
+]
+const fsSummary = (opts = {}) => buildPlantPipelineSummary(fsProductions, fsDispatches, [], [], { date: '2026-11-12', skus: fsSkus, ...opts })
+
+describe('buildPlantPipelineSummary — FG stock, as the Dashboard Inventory overview shows it', () => {
+  it('pools a size across its typed code and its ERP MM ID, and floors an over-invoiced size at 0', () => {
+    const hyd = fsSummary().plants.find(p => p.name === 'Hyderabad')
+    expect(hyd.fgStock).toBeCloseTo(2)                       // 10 made − 8 invoiced of the one RHS
+    expect(hyd.dispatchedWithoutProduction).toBeCloseTo(3)   // the SHS Hyderabad never made
+    expect(hyd.fgLeft).toBeCloseTo(-1)                       // netted: 10 − 11
+  })
+
+  it('bridges back to the netted figure on every plant: FG stock − dispatched w/o production = FG left', () => {
+    const p = fsSummary()
+    p.plants.forEach(r => expect(r.fgStock - r.dispatchedWithoutProduction).toBeCloseTo(r.fgLeft))
+    expect(p.totals.fgStock).toBeCloseTo(7)                  // Hyderabad 2 + NPMD 5
+    expect(p.totals.dispatchedWithoutProduction).toBeCloseTo(3)
+    expect(p.checks.fgStockBridgesToFgLeft).toBe(true)
+  })
+
+  it('pools by plant: one plant cannot hide its over-invoicing behind another plant\'s stock of the size', () => {
+    const p = fsSummary()
+    expect(p.plants.find(r => r.name === 'NPMD').fgStock).toBeCloseTo(5)   // 6 − 1, NPMD's own SHS
+    expect(p.plants.find(r => r.name === 'Hyderabad').dispatchedWithoutProduction).toBeCloseTo(3)
+  })
+
+  it('without the SKU master it keys by raw code — the 1441.7 T mistake, kept visible here', () => {
+    const hyd = fsSummary({ skus: null }).plants.find(p => p.name === 'Hyderabad')
+    expect(hyd.fgStock).toBeCloseTo(10)                      // the typed code never meets its MM ID
+    expect(hyd.dispatchedWithoutProduction).toBeCloseTo(11)
+  })
+
+  it('reads the same per-plant FG as the Dashboard\'s own inventoryOverview', () => {
+    const ov = inventoryOverview({ productions: fsProductions, dispatches: fsDispatches, skus: fsSkus,
+      from: '2026-11-01', to: '2026-11-12', today: '2026-11-12' })
+    const p = fsSummary()
+    ov.stock.rows.forEach(r => {
+      // The overview lists every master plant; the pipeline only the plants holding rows (0 if absent).
+      const mine = p.plants.find(x => x.plant === r.plant)
+      expect(mine ? mine.fgStock : 0).toBeCloseTo(r.fg)
+    })
+    expect(p.totals.fgStock).toBeCloseTo(ov.stock.total.fg)
+  })
+
+  it('the workbook data carries FG stock too, from the same call', () => {
+    const r = buildMtdDashboardData([], fsDispatches, fsProductions, fsSkus, { date: '2026-11-12', coils: [], babyCoils: [] })
+    expect(r.pipeline.totals.fgStock).toBeCloseTo(fsSummary().totals.fgStock)
   })
 })
 

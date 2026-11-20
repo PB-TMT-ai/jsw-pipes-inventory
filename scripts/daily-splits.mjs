@@ -196,8 +196,10 @@ const resolvedProductions = resolveProductionWeights(productions, skus, babyCoil
 // second script running a minute later against a floor that has moved.
 const servableSplit = buildServableSummary(orders, dispatches, skus,
   { date: DATE, productions: resolvedProductions, stateRegions, plants, distributors })
+// `skus` makes FG stock pool by physical size (typed code and ERP MM ID as one pipe), exactly as the
+// Dashboard's Inventory overview does — without it Hyderabad's FG stock reads 1441.7 T, not 663.0 T.
 const plantPipeline = buildPlantPipelineSummary(resolvedProductions, dispatches, coils, babyCoils,
-  { date: DATE })
+  { date: DATE, skus })
 
 const summary = {
   date: DATE,
@@ -265,9 +267,10 @@ if (servableSplit.diagnostics.unmappedUnconfirmed > 0.005) {
 
 console.error(`\n  Plant pipeline — ${summary.month}, as on ${summary.date}\n`)
 for (const p of plantPipeline.plants) {
-  console.error(`   ${p.name.padEnd(14)} produced-MTD ${T(p.producedMtd).padStart(10)}   FG ${T(p.fgLeft).padStart(10)}   RM ${T(p.rmTotal).padStart(10)}`)
+  console.error(`   ${p.name.padEnd(14)} produced-MTD ${T(p.producedMtd).padStart(10)}   FG stock ${T(p.fgStock).padStart(10)}   RM ${T(p.rmTotal).padStart(10)}   (FG left ${T(p.fgLeft)})`)
 }
-console.error(`   ${'ALL PLANTS'.padEnd(14)} produced-MTD ${T(plantPipeline.totals.producedMtd).padStart(10)}   FG ${T(plantPipeline.totals.fgLeft).padStart(10)}   RM ${T(plantPipeline.totals.rmTotal).padStart(10)}`)
+console.error(`   ${'ALL PLANTS'.padEnd(14)} produced-MTD ${T(plantPipeline.totals.producedMtd).padStart(10)}   FG stock ${T(plantPipeline.totals.fgStock).padStart(10)}   RM ${T(plantPipeline.totals.rmTotal).padStart(10)}   (FG left ${T(plantPipeline.totals.fgLeft)})`)
+console.error(`   (FG stock = the Dashboard Inventory overview's per-plant FG; FG left nets off ${T(plantPipeline.totals.dispatchedWithoutProduction)} dispatched w/o production)`)
 if (plantPipeline.diagnostics.unattributedProducedMtd > 0.005 || plantPipeline.diagnostics.unattributedRmTotal > 0.005) {
   console.error(`\n   ! Unattributed pipeline: ${T(plantPipeline.diagnostics.unattributedProducedMtd)} produced MTD / ${T(plantPipeline.diagnostics.unattributedRmTotal)} RM — rows carrying no plant. Fix the plant on those rows; the tonnage stays counted.`)
 }
@@ -300,6 +303,9 @@ if (!plantPipeline.checks.producedTiesToAllPlants || !plantPipeline.checks.fgTie
   console.error(`\n   per-plant: produced ${T(plantPipeline.totals.producedMtd)} / FG ${T(plantPipeline.totals.fgLeft)} / full coil ${T(plantPipeline.totals.fullCoilLeft)} / slit coil ${T(plantPipeline.totals.babyLeft)}`)
   console.error(`   ungrouped: produced ${T(plantPipeline.checks.allPlantsProducedMtd)} / FG ${T(plantPipeline.checks.allPlantsFgLeft)} / full coil ${T(plantPipeline.checks.allPlantsFullCoilLeft)} / slit coil ${T(plantPipeline.checks.allPlantsBabyLeft)}`)
   die(`Plant pipeline does not tie to the company figures (max diff ${plantPipeline.checks.maxAbsDiff.toFixed(3)} T). Refusing to emit.`)
+}
+if (!plantPipeline.checks.fgStockBridgesToFgLeft) {
+  die(`FG stock − dispatched w/o production does not equal FG left on some plant (gap ${plantPipeline.checks.stockBridgeGap.toFixed(3)} T). Refusing to emit.`)
 }
 console.error('')
 
