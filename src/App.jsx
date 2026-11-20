@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef, useContext, createContext, useLayoutEffect } from 'react'
 import { useSupabaseStore, verifyLoginDetails, failedLoads } from './lib/db'
 import {
   fmtT, fmtT3, fmtTonnes, fmtTypedTonnes, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
@@ -2340,28 +2340,57 @@ function Segmented({ label, options, value, onChange, role = null }) {
 // `onClick` makes the figure a link to its detail screen (`go` names it, for the hover and screen readers).
 const KPI_COLS = { 3: 'lg:grid-cols-3', 4: 'lg:grid-cols-4', 6: 'lg:grid-cols-6' }
 function KpiStrip({ label, items }) {
-  return (
-    <dl aria-label={label} className={`grid grid-cols-2 ${KPI_COLS[items.length] || 'lg:grid-cols-4'} gap-y-3 border-y border-slate-200 dark:border-slate-700 py-3 lg:divide-x divide-slate-200 dark:divide-slate-700 tabular-nums`}>
-      {items.map((k, i) => (
-        <div key={k.label} className={i === 0 ? 'pr-4' : 'px-4'}>
+  const look = useContext(DashLook)
+  const value = (k, big) => <>
+    {k.onClick
+      ? <button type="button" onClick={k.onClick} title={`Open ${k.go}`} aria-label={`${k.label}: ${k.value}${k.unit ? ` ${k.unit}` : ''} — open ${k.go}`}
+          className={`underline ${look === 'E' ? 'decoration-slate-500' : 'decoration-slate-300 dark:decoration-slate-600'} underline-offset-4 hover:decoration-indigo-400 rounded ${DASH_RING}`}>{k.value}</button>
+      : k.value}
+    {k.unit && <span className={`ml-1 ${big ? 'text-sm' : ''} font-normal ${look === 'E' ? 'text-slate-300' : 'text-slate-500 dark:text-slate-400'}`}>{k.unit}</span>}
+  </>
+  // PROTOTYPE looks (?look=): C one line of figures; B tiles; E white on the headline band; A the #303 strip.
+  if (look === 'C') return (
+    <dl aria-label={label} className="flex flex-wrap items-baseline gap-x-5 gap-y-1 border-y border-slate-200 dark:border-slate-700 py-1.5 text-sm tabular-nums">
+      {items.map(k => (
+        <div key={k.label} className="flex items-baseline gap-1.5" title={typeof k.sub === 'string' ? k.sub : undefined}>
+          <dt className="text-slate-500 dark:text-slate-400">{k.label}</dt>
+          <dd className={`font-semibold ${k.tone || 'text-slate-900 dark:text-white'}`}>{value(k, false)}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+  if (look === 'B') return (
+    <dl aria-label={label} className={`grid grid-cols-2 ${KPI_COLS[items.length] || 'lg:grid-cols-4'} gap-3 tabular-nums`}>
+      {items.map(k => (
+        <div key={k.label} className={`rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-3 border-t-[3px] ${/red/.test(k.tone || '') ? 'border-t-red-500' : 'border-t-indigo-500'}`}>
           <dt className="text-sm text-slate-500 dark:text-slate-400">{k.label}</dt>
-          <dd className={`text-2xl font-semibold ${k.tone || 'text-slate-900 dark:text-white'}`}>
-            {k.onClick
-              ? <button type="button" onClick={k.onClick} title={`Open ${k.go}`} aria-label={`${k.label}: ${k.value}${k.unit ? ` ${k.unit}` : ''} — open ${k.go}`}
-                  className={`underline decoration-slate-300 dark:decoration-slate-600 underline-offset-4 hover:decoration-indigo-500 rounded ${DASH_RING}`}>{k.value}</button>
-              : k.value}
-            {k.unit && <span className="ml-1 text-sm font-normal text-slate-500 dark:text-slate-400">{k.unit}</span>}</dd>
+          <dd className={`text-2xl font-semibold ${k.tone || 'text-slate-900 dark:text-white'}`}>{value(k, true)}</dd>
           {k.sub && <dd className="text-xs text-slate-500 dark:text-slate-400">{k.sub}</dd>}
+        </div>
+      ))}
+    </dl>
+  )
+  const dark = look === 'E'
+  return (
+    <dl aria-label={label} className={`grid grid-cols-2 ${KPI_COLS[items.length] || 'lg:grid-cols-4'} gap-y-3 py-3 lg:divide-x tabular-nums ${dark
+      ? 'rounded-lg bg-slate-800 dark:bg-slate-950 text-white px-2 divide-slate-600 [&_dd.text-xs_span]:!text-slate-100'
+      : 'border-y border-slate-200 dark:border-slate-700 divide-slate-200 dark:divide-slate-700'}`}>
+      {items.map((k, i) => (
+        <div key={k.label} className={i === 0 && !dark ? 'pr-4' : 'px-4'}>
+          <dt className={`text-sm ${dark ? 'text-slate-300' : 'text-slate-500 dark:text-slate-400'}`}>{k.label}</dt>
+          <dd className={`text-2xl font-semibold ${dark ? (/red/.test(k.tone || '') ? 'text-red-300' : 'text-white') : k.tone || 'text-slate-900 dark:text-white'}`}>{value(k, true)}</dd>
+          {k.sub && <dd className={`text-xs ${dark ? 'text-slate-300' : 'text-slate-500 dark:text-slate-400'}`}>{k.sub}</dd>}
         </div>
       ))}
     </dl>
   )
 }
 function DashBlock({ title, scope, actions, children }) {
+  const look = useContext(DashLook)
   return (
-    <section aria-label={title} className="space-y-2 min-w-0">
+    <section aria-label={title} className={`space-y-2 min-w-0 ${look === 'B' ? 'rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4' : ''}`}>
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h3 className="text-base font-semibold text-slate-900 dark:text-white">{title}</h3>
+        <h3 className={`${look === 'C' ? 'text-sm' : 'text-base'} font-semibold text-slate-900 dark:text-white`}>{title}</h3>
         <div className="flex flex-wrap items-center gap-2 text-xs">{actions}</div>
       </div>
       {scope && <p className="text-xs text-slate-600 dark:text-slate-300">{scope}</p>}
@@ -2417,10 +2446,14 @@ function ExportMenu({ items: given }) {
 // One control row per dashboard (ADR-0018): scope and "as of" on the left; the dashboard's own filters and
 // its one Export menu on the right. `note` is a second, smaller line under the scope (e.g. a period).
 function DashControls({ scope, asOf, note, exports, children }) {
+  const look = useContext(DashLook)
+  const band = look === 'E'
   return (
-    <div className="flex flex-wrap items-end justify-between gap-3">
-      <div className="text-xs text-slate-500 dark:text-slate-400">
-        <p><strong className="text-slate-800 dark:text-slate-100">{scope}</strong>{asOf && <> · as of <strong>{asOf}</strong></>}</p>
+    <div className={`flex flex-wrap items-end justify-between gap-3 ${band ? 'rounded-lg bg-slate-800 dark:bg-slate-950 px-4 py-3 [&_label]:!text-slate-200 [&_[role=group]>span]:!text-slate-200'
+      : look === 'C' ? 'sticky z-30 py-2 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700' : ''}`}
+      style={look === 'C' ? { top: 'var(--dash-top2, 0px)' } : undefined}>
+      <div className={`text-xs ${band ? 'text-slate-300' : 'text-slate-500 dark:text-slate-400'}`}>
+        <p><strong className={band ? 'text-white text-sm' : 'text-slate-800 dark:text-slate-100'}>{scope}</strong>{asOf && <> · as of <strong className={band ? 'text-white' : ''}>{asOf}</strong></>}</p>
         {note && <p>{note}</p>}
       </div>
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -8141,7 +8174,36 @@ const DASHBOARDS = [
     ['check', 'Production check'], ['list', 'SKU list'], ['monthwise', 'Month-wise'], ['dispatch', 'Dispatch']] },
   { key: 'fm', label: FM_MM_SM_NAME, screens: FM_MM_SM_TABS, admin: true },
 ]
+// PROTOTYPE (?look=A|B|C|D|E, throwaway): five looks for every dashboard's shell — never a table or grid.
+const DASH_LOOKS = [['A', 'Today: plain'], ['B', 'Panels'], ['C', 'Dense console'], ['D', 'Side rail'], ['E', 'Headline band']]
+const DashLook = createContext('A')
+function LookSwitcher({ look, setLook }) {
+  const i = Math.max(0, DASH_LOOKS.findIndex(([k]) => k === look))
+  const step = (d) => {
+    const k = DASH_LOOKS[(i + d + DASH_LOOKS.length) % DASH_LOOKS.length][0]
+    const u = new URL(window.location.href); u.searchParams.set('look', k); window.history.replaceState(null, '', u)
+    setLook(k)
+  }
+  const btn = 'w-8 h-8 rounded-full hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white'
+  return (
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-full bg-fuchsia-700 text-white shadow-2xl ring-2 ring-white px-2 py-1 text-sm">
+      <button type="button" aria-label="Previous look" onClick={() => step(-1)} className={btn}>←</button>
+      <span className="font-semibold whitespace-nowrap">Look {DASH_LOOKS[i][0]} — {DASH_LOOKS[i][1]}</span>
+      <button type="button" aria-label="Next look" onClick={() => step(1)} className={btn}>→</button>
+    </div>
+  )
+}
 function Dashboards({ showFm, children }) {
+  const [look, setLook] = useState(() => { const v = new URLSearchParams(window.location.search).get('look'); return DASH_LOOKS.some(([k]) => k === v) ? v : 'A' })
+  // C pins the two tab rows under the app header, and each dashboard's control row under them.
+  const navRef = useRef(null)
+  const [tops, setTops] = useState([0, 0])
+  useLayoutEffect(() => {
+    if (look !== 'C') return undefined
+    const measure = () => { const h = document.querySelector('header')?.offsetHeight || 0; setTops([h, h + (navRef.current?.offsetHeight || 0)]) }
+    measure(); window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [look])
   const boards = DASHBOARDS.filter(b => !b.admin || showFm)
   // The open dashboard and each one's last screen: a UI preference kept on this device (`jsw:dashScreen`),
   // never data. Anything unreadable — an older value, a dashboard this login does not get — opens the first.
@@ -8158,12 +8220,44 @@ function Dashboards({ showFm, children }) {
     try { LS.set('jsw:dashScreen', next) } catch { /* storage blocked: the tab still switches */ }
   }
   const screen = screenOf(board.key)
-  return (
-    <div className="space-y-4">
+  const body = children({ board: board.key, screen, screenOf, go })
+  const tabs = (
+    <>
       <ScreenTabs label="Dashboard" tabs={boards.map(b => [b.key, b.label])} value={board.key} onChange={k => go(k)} />
       <Segmented role="tablist" label={`${board.label} screens`} options={board.screens} value={screen} onChange={k => go(board.key, k)} />
-      {children({ board: board.key, screen, screenOf, go })}
-    </div>
+    </>
+  )
+  // D: the dashboards and the open one's screens as a left rail (tabs again under 1024 px, where a rail would squeeze the grids).
+  const rail = (
+    <nav aria-label="Dashboards" className="hidden lg:block sticky top-32 self-start text-sm">
+      {boards.map(b => (
+        <div key={b.key} className="mb-1">
+          <button type="button" aria-pressed={b.key === board.key} onClick={() => go(b.key)}
+            className={`w-full text-left px-3 py-1.5 rounded-md ${DASH_RING} ${b.key === board.key ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>{b.label}</button>
+          {b.key === board.key && b.screens.map(([k, n]) => (
+            <button key={k} type="button" aria-pressed={k === screen} onClick={() => go(b.key, k)}
+              className={`w-full text-left pl-6 pr-3 py-1 rounded-md border-l-2 ${DASH_RING} ${k === screen ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-800 dark:text-indigo-200 font-medium' : 'border-transparent text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>{n}</button>
+          ))}
+        </div>
+      ))}
+    </nav>
+  )
+  return (
+    <DashLook.Provider value={look}>
+      {look === 'D' ? (
+        <div className="lg:grid lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-6">
+          {rail}
+          <div className="space-y-4 min-w-0"><div className="lg:hidden space-y-4">{tabs}</div>{body}</div>
+        </div>
+      ) : (
+        <div className={`space-y-4 ${look === 'B' ? '-mx-4 sm:-mx-6 lg:-mx-8 -my-6 px-4 sm:px-6 lg:px-8 py-6 bg-slate-100 dark:bg-slate-950 min-h-screen' : ''}`}
+          style={{ '--dash-top2': `${tops[1]}px` }}>
+          <div ref={navRef} className={`space-y-4 ${look === 'C' ? 'sticky z-40 bg-slate-50 dark:bg-slate-900 pt-2 pb-3' : ''}`} style={look === 'C' ? { top: tops[0] } : undefined}>{tabs}</div>
+          {body}
+        </div>
+      )}
+      <LookSwitcher look={look} setLook={setLook} />
+    </DashLook.Provider>
   )
 }
 
