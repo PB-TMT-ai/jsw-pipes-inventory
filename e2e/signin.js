@@ -115,6 +115,17 @@ export async function signIn(page, who = 'admin', { password = 'correct-horse', 
   await page.getByLabel('Login ID').fill(row.login_id)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  // Dashboard is the landing tab for every role, so it is the one signal that works for all three.
-  await expect(page.getByRole('button', { name: 'Dashboard', exact: true })).toBeVisible()
+  // Dashboards is the landing tab for every role, so it is the one signal that works for all three.
+  await expect(page.getByRole('button', { name: 'Dashboards', exact: true })).toBeVisible()
+}
+
+// Every dashboard sits under the one Dashboards tab (ADR-0018), two layers deep: a dashboard
+// ("Inventory", "Plant drill", "Coil Tracker", "Sales", "FM / MM / SM"), then one of its screens.
+// `screen` is optional — leave it out to land on whatever the dashboard opens with.
+export async function openDashboard(page, board, screen) {
+  await page.getByRole('button', { name: 'Dashboards', exact: true }).click()
+  await page.getByRole('group', { name: 'Dashboard', exact: true }).getByRole('button', { name: board, exact: true }).click()
+  if (screen) {
+    await page.getByRole('tablist', { name: `${board} screens`, exact: true }).getByRole('tab', { name: screen, exact: true }).click()
+  }
 }

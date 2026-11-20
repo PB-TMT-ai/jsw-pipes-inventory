@@ -1015,3 +1015,21 @@ the live site at 04:02 and 04:13 — which empties Dispatch the same way.
   the cap then never binds mid-split, so no second pass. Written in ALGORITHMS.md before the code (Step 0).
 
 2026-11-18 | Sales tab FM / MM / SM sub-tab — review of #382, Raw material split | The split pooled Hyderabad and Lepakshi coil into one South cell against the region's Production required, so one plant's spare coil hid the other plant's need — the CLAUDE.md "allocation never crosses plants" rule, broken by a display figure. | The split now runs one plant at a time against that plant's own Production required (`fmMmSmRequiredByPlant`: the grid's rule on the plant alone, = the Plant filter's figure) and adds the plants per cell; regression test: Hyderabad surplus, Lepakshi need, the need stays uncovered. | **A display-only allocation is still an allocation.** The plant rule applies to every figure that offsets coil against need, not only to what is saved.
+
+## 20-Nov-2026 — ADR-0018 one Dashboards tab: three layout traps
+- **Tailwind `flex` beats the `hidden` attribute.** A screen kept mounted and hidden with `hidden={…}` still showed when its
+  wrapper carried `className="flex …"`: the browser's `[hidden] { display: none }` loses to the class's `display: flex`.
+  **Fix:** toggle a class (`hidden` / `flex`), or keep `hidden` only on elements with no display class. **Prevention:** an e2e
+  check that a hidden screen's heading has count 0 / is hidden, not just that the visible one shows.
+- **`InventoryApp` returns early on `if (loading) return …`.** A hook added below that line runs on some renders and not
+  others — React's "rendered more hooks than during the previous render". **Fix:** every hook (`useState`, `useMemo`,
+  `useLayoutEffect`) goes **above** the early return. **Prevention:** read the component top-down for an early return
+  before adding a hook to it.
+- **Sticky rows need measured offsets under a sticky header.** `top-0` on the dashboard tab rows slid them under the app's
+  own sticky header; a hard-coded `top-[64px]` broke when the header wrapped on a narrow screen. **Fix:** `Dashboards` measures
+  the header and its own nav (`offsetHeight` in a `useLayoutEffect`, again on resize) and hands the control row
+  `--dash-top2`. **Prevention:** never hard-code a sticky offset that sits under another sticky element.
+- **Also (e2e).** A grid whose title reads the scope alone ("South") makes `getByLabel('South')` match the section as well
+  as the Region checkbox — use `getByRole('checkbox', …)`. And `npx playwright test` with 4 workers flakes a few
+  unrelated timeouts in this container; re-run those alone before reading them as failures.
+
