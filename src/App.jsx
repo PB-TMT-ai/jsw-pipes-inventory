@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef, createContext, useContext } from 'react'
 import { useSupabaseStore, verifyLoginDetails, failedLoads } from './lib/db'
 import {
   fmtT, fmtT3, fmtTonnes, fmtTypedTonnes, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
@@ -1734,7 +1734,7 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
 // like `dispatches`; `compare*`/`comparePlant` are what the plant table reads (see DispatchOverview).
 function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false, canWiden = true,
   orders = [], productions = [], compareOrders = null, compareDispatches = null, comparePlant = null,
-  stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
+  stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS, protoNoOverview = false }) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // Soft-deletes the WHOLE invoice record, by id, in the raw store — `dispatches` here may be a
@@ -1808,9 +1808,9 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
         <Btn variant="ghost" onClick={downloadDispatchRecordsCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>⬇ Download CSV</Btn>
       </div>
 
-      <DispatchOverview orders={orders} dispatches={dispatches} productions={productions} skus={skus}
+      {!protoNoOverview && <DispatchOverview orders={orders} dispatches={dispatches} productions={productions} skus={skus}
         compareOrders={compareOrders ?? orders} compareDispatches={compareDispatches ?? dispatches} comparePlant={comparePlant}
-        stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />
+        stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />}
 
       <p className="text-xs text-slate-400">
         Dispatch (invoice) data is loaded from the daily <strong>Upload Invoice Excel</strong> on the
@@ -2301,6 +2301,9 @@ const flatCSV = (filename, cols, rows) => downloadCSV(filename, cols.map(c => c.
 // tabs, a segmented switch, a strip of plain numbers between thin rules, a plain block (no card,
 // no shadow) whose scope is a visible line, status as a word with a red dot on Act only.
 const DASH_RING = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
+// PROTOTYPE (dashboards nav, ?proto=A|B|C): when set, the one Dashboards nav picks each screen and the
+// dashboards hide their own tab rows. Throwaway — lives only on the prototype branch.
+const ProtoNav = createContext(null)
 function ScreenTabs({ label, tabs, value, onChange }) {
   return (
     <div role="group" aria-label={label} className="flex flex-wrap gap-x-6 gap-y-1 text-sm border-b border-slate-200 dark:border-slate-700">
@@ -2441,8 +2444,10 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   plants = PLANTS, selectedPlant = ALL_PLANTS, screens = {}, exports = [] }) {
   const todayStr = today()
   // #303: the Dashboard's screen tab, a UI preference kept on this device (`jsw:dashScreen`), never data.
-  const [screen, setScreenState] = useState(() => { const v = LS.get('jsw:dashScreen'); return DASH_SCREENS.some(([k]) => k === v) ? v : 'overview' })
-  const setScreen = (k) => { setScreenState(k); try { LS.set('jsw:dashScreen', k) } catch { /* storage blocked: the tab still switches */ } }
+  const [screen0, setScreenState] = useState(() => { const v = LS.get('jsw:dashScreen'); return DASH_SCREENS.some(([k]) => k === v) ? v : 'overview' })
+  const proto = useContext(ProtoNav)
+  const screen = proto?.dash || screen0
+  const setScreen = (k) => { if (proto) return proto.open(k); setScreenState(k); try { LS.set('jsw:dashScreen', k) } catch { /* storage blocked: the tab still switches */ } }
   // The region switch narrows the Overview's comparison rows to the plants serving that region
   // (`plants.serves`); its total is the All total run on those rows (`inventoryRegionStock`).
   const [region, setRegion] = useState(INVENTORY_ALL_REGIONS)
@@ -2453,7 +2458,9 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   const headerPlant = selectedPlant === ALL_PLANTS ? null : selectedPlant
   const [picked, setPicked] = useState(null)
   const drillPlant = headerPlant ?? picked
-  const [drillTab, setDrillTab] = useState('2b')
+  const [drillTab0, setDrillTab0] = useState('2b')
+  const drillTab = proto?.drill || drillTab0
+  const setDrillTab = (t) => proto ? proto.open('drill', t) : setDrillTab0(t)
   // Filters per drill tab ({ [tab]: { [key]: [values] } }) and the FG families opened into their
   // thicknesses. Both reset when the panel moves to another plant — its options differ.
   const [drillFilters, setDrillFilters] = useState({})
@@ -2761,7 +2768,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
         </div>
       </div>
 
-      <ScreenTabs label="Dashboard screen" tabs={DASH_SCREENS} value={screen} onChange={setScreen} />
+      {!proto && <ScreenTabs label="Dashboard screen" tabs={DASH_SCREENS} value={screen} onChange={setScreen} />}
 
       {/* Every screen stays mounted and is only hidden, so each export reads the screen's own state
           (filters, sort, the open drill tab) whichever tab the Export menu is opened from. */}
@@ -2860,8 +2867,8 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
             <p className="text-sm text-slate-400">Pick a plant above, or click one in the stock table on Overview, to open its drill panel.</p>
           ) : (
             <>
-              <Segmented role="tablist" label="Drill panel" value={drillTab} onChange={setDrillTab}
-                options={DRILL_TABS.map(t => [t.key, t.label])} />
+              {!proto && <Segmented role="tablist" label="Drill panel" value={drillTab} onChange={setDrillTab}
+                options={DRILL_TABS.map(t => [t.key, t.label])} />}
               <div className="mt-3">
                 <DrillFilters defs={filterDefs} values={drillFilters[drillTab] || {}}
                   onChange={v => setDrillFilters(all => ({ ...all, [drillTab]: v }))} />
@@ -2981,6 +2988,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
 function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   trackerCoils = [], trackerBabyCoils = [], trackerProductions = [], trackerDispatches = [],
   trackerPlant = null, trackerPlants = PLANTS, selectedPlant = ALL_PLANTS }) {
+  const protoNav = useContext(ProtoNav) // PROTOTYPE: its Sales block moves to Sales → This month
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
@@ -3346,13 +3354,13 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
 
       {/* Sales (MT) — the SAME KPIs as the Sales dashboard (salesKpis): Confirmed / Non-confirmed are
           the carried-forward snapshot; Invoiced MTD = current month. */}
-      <DashBlock title={`Sales — ${monthLabel(todayStr.slice(0, 7))}`}>
+      {!protoNav && <DashBlock title={`Sales — ${monthLabel(todayStr.slice(0, 7))}`}>
         <KpiStrip label="Sales" items={[
           { label: 'Total Orders', value: tonnes(sales.totalOrders), sub: 'Invoiced + Confirmed + Non-conf.' },
           { label: 'Pending to Dispatch', value: tonnes(sales.pending), sub: `Confirmed ${tonnes(sales.confirmed)} · Non-confirmed ${tonnes(sales.nonConfirmed)}` },
           { label: 'Invoiced MTD', value: tonnes(sales.mtdInvoice), sub: 'Invoiced this month' },
         ]} />
-      </DashBlock>
+      </DashBlock>}
 
       <DashBlock title={`Activity — ${periodLabel}`}>
         <KpiStrip label="Activity" items={[
@@ -3658,7 +3666,9 @@ function CoilThicknessTable({ grid }) {
 const COIL_TRACKER_VIEWS = [['stock', 'Stock now'], ['month', 'Movement by month'], ['ledger', 'Coil ledger']]
 function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeLabel = 'All plants' }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
-  const [view, setView] = useState('stock')
+  const [view0, setView] = useState('stock')
+  const protoCoil = useContext(ProtoNav)?.coil
+  const view = protoCoil || view0
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const active = (arr) => (arr || []).filter(x => !x.deleted)
@@ -3788,7 +3798,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeL
       </div>
 
       {/* ── The three views ── */}
-      <div role="group" aria-label="Coil Tracker view" className="inline-flex flex-wrap border-[1.5px] border-slate-800 dark:border-slate-400">
+      <div role="group" aria-label="Coil Tracker view" hidden={!!protoCoil} className="inline-flex flex-wrap border-[1.5px] border-slate-800 dark:border-slate-400">
         {COIL_TRACKER_VIEWS.map(([k, label]) => (
           <button key={k} type="button" onClick={() => setView(k)} aria-pressed={view === k}
             className={`px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset ${view === k
@@ -5513,7 +5523,9 @@ const FM_MM_SM_TABS = [['status', 'Status key'], ['next', 'Make next · Stock st
 
 function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant,
   planningRows, allProductions, allDispatches }) {
-  const [inner, setInner] = useState('status')
+  const [inner0, setInner] = useState('status')
+  const protoFm = useContext(ProtoNav)?.fm
+  const inner = protoFm || inner0
   const todayStr = today()
   // The tag feed: whole stores, every plant, as of today (fmMmSmFeed). The grids below get the
   // plant-filtered stores, so their Closing stock, Dispatch, Pending and Production required follow the header.
@@ -5528,7 +5540,7 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
   return (
     <div className="space-y-6">
       <div className="flex items-stretch gap-4">
-        <div className="flex-1 min-w-0"><ScreenTabs label={`${FM_MM_SM_NAME} tabs`} tabs={FM_MM_SM_TABS} value={inner} onChange={setInner} /></div>
+        <div className="flex-1 min-w-0">{!protoFm && <ScreenTabs label={`${FM_MM_SM_NAME} tabs`} tabs={FM_MM_SM_TABS} value={inner} onChange={setInner} />}</div>
         {/* #390: the key lives behind the strip; the Status key tab carries every limit itself. */}
         {inner !== 'status' && (
           <div className="flex items-end border-b border-slate-200 dark:border-slate-700 pb-1">
@@ -5747,7 +5759,11 @@ function FmMmSmWorkedOut({ children }) {
 function SalesDashboard({ orders, dispatches, skus, productions = [], coils = [], babyCoils = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, plants = [], distributors = [], selectedPlant = ALL_PLANTS, canWiden = true,
   showFmMmSm = false, planningRows = [], allProductions = [], allDispatches = [] }) {
   // Which sub-tab is open. Plain state, stored nowhere, so a plant login has nothing to ignore.
-  const [salesView, setSalesView] = useState('dash')
+  const [salesView0, setSalesView] = useState('dash')
+  // PROTOTYPE (?proto=): the Dashboards nav picks the Sales sub-tab; each section shows only on its own.
+  const ps = useContext(ProtoNav)?.sales
+  const show = k => !ps || ps === k
+  const salesView = ps === 'fm' ? 'fmMmSm' : ps ? 'dash' : salesView0
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // ── Best Estimate under a plant filter (ticket #121) ──────────────────────────────────────────
@@ -5982,7 +5998,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
   if (showFmMmSm && salesView === 'fmMmSm') {
     return (
       <div className="space-y-6">
-        <ScreenTabs label="Sales view" tabs={SALES_VIEWS} value={salesView} onChange={setSalesView} />
+        {!ps && <ScreenTabs label="Sales view" tabs={SALES_VIEWS} value={salesView} onChange={setSalesView} />}
         <FmMmSmSubTab orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus}
           plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant}
           planningRows={planningRows} allProductions={allProductions} allDispatches={allDispatches} />
@@ -5992,7 +6008,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
 
   return (
     <div className="space-y-6">
-      {showFmMmSm && <ScreenTabs label="Sales view" tabs={SALES_VIEWS} value={salesView} onChange={setSalesView} />}
+      {showFmMmSm && !ps && <ScreenTabs label="Sales view" tabs={SALES_VIEWS} value={salesView} onChange={setSalesView} />}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
         <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
@@ -6007,6 +6023,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
             plantScoped || r.gapToBe == null ? '' : fmtT(r.gapToBe),
             fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ Sales CSV</Btn>
       </div>
+      {show('month') && <>
       <p className="text-xs text-slate-400 -mt-3">
         <strong>Confirmed</strong> = Release − Invoiced (orders confirmed, pending dispatch), <em>less any tonnage already
         invoiced against the line</em> — the ERP's own invoiced figure does not fill until an order reaches Delivered, so
@@ -6024,7 +6041,9 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
           ]} />
         <Card title="Invoiced MTD" value={`${fmtT(kpis.mtdInvoice)} T`} sub={`Invoiced · ${monthLabel(month)}`} color="emerald" />
       </div>
+      </>}
 
+      {show('dist') && <>
       <Section title="Distributor-wise Sales" actions={
         <div className="flex items-center gap-2 flex-wrap">
           <select value={distributor} onChange={e => setDistributor(e.target.value)} className={inputCls}>
@@ -6123,10 +6142,14 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
           ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
         </Section>
       )}
+      </>}
 
+      {show('size') && <>
       <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus} plants={plants}
         stateRegions={stateRegions} distributors={distributors} distributor={distributor} month={month} selectedPlant={selectedPlant} />
+      </>}
 
+      {show('monthwise') && <>
       <Section title="Month-wise Sales">
         {monthRows.length ? (
           <>
@@ -6137,6 +6160,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
           </>
         ) : <p className="text-sm text-slate-400 py-8 text-center">No order / invoice data yet</p>}
       </Section>
+      </>}
     </div>
   )
 }
@@ -8169,6 +8193,151 @@ function ProductionPlanningTab(props) {
   )
 }
 
+// ── PROTOTYPE — one Dashboards tab, two layers only (dashboard → screen). Throwaway; lives on the
+// prototype branch, never merged. Three nav layouts on the same content, switched by ?proto=A|B|C
+// and the floating bar (or ← →). The screens are the real ones, driven through ProtoNav. ──
+const PROTO_GROUPS = [
+  { key: 'inventory', label: 'Inventory', blurb: 'Stock by plant, stock movement, plant-wise tracker, activity and alerts.',
+    subs: [['overview', 'Overview'], ['movement', 'Stock movement'], ['tracker', 'Plant-wise Tracker'], ['sales', 'Activity']] },
+  { key: 'drill', label: 'Plant drill', blurb: 'One plant in depth: coil & FG grid, old coil, slit waiting, FG age, FG days of cover.',
+    subs: DRILL_TABS.map(t => [t.key, t.label]) },
+  { key: 'coil', label: 'Coil Tracker', blurb: 'Raw-material coil register: stock now, movement by month, coil ledger.', subs: COIL_TRACKER_VIEWS },
+  { key: 'sales', label: 'Sales', blurb: 'Order book and invoicing by distributor, size and month; dispatch by plant.',
+    subs: [['month', 'This month'], ['dist', 'Distributor'], ['size', 'Size grid'], ['monthwise', 'Month-wise'], ['dispatch', 'Dispatch']] },
+  { key: 'fm', label: FM_MM_SM_NAME, blurb: 'Fast / medium / slow movers: status key, make next, stock stuck.', subs: FM_MM_SM_TABS, admin: true },
+]
+const PROTO_VARIANTS = [['A', 'Two tab rows'], ['B', 'Sidebar'], ['C', 'Hub + breadcrumb']]
+
+function ProtoSwitcher({ variant, setVariant }) {
+  const i = Math.max(0, PROTO_VARIANTS.findIndex(([k]) => k === variant))
+  const step = (d) => {
+    const k = PROTO_VARIANTS[(i + d + PROTO_VARIANTS.length) % PROTO_VARIANTS.length][0]
+    const u = new URL(window.location.href); u.searchParams.set('proto', k); window.history.replaceState(null, '', u)
+    setVariant(k)
+  }
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.target.closest?.('input, textarea, select, [contenteditable]')) return
+      if (e.key === 'ArrowLeft') step(-1)
+      if (e.key === 'ArrowRight') step(1)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+  const btn = 'w-8 h-8 rounded-full hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white'
+  return (
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-full bg-fuchsia-700 text-white shadow-2xl ring-2 ring-white px-2 py-1 text-sm">
+      <button type="button" aria-label="Previous layout" onClick={() => step(-1)} className={btn}>←</button>
+      <span className="font-semibold whitespace-nowrap">Prototype {PROTO_VARIANTS[i][0]} — {PROTO_VARIANTS[i][1]}</span>
+      <button type="button" aria-label="Next layout" onClick={() => step(1)} className={btn}>→</button>
+    </div>
+  )
+}
+
+function ProtoDashboards({ variant, setVariant, showFm, dashboard, coilTracker, sales, dispatch }) {
+  const v = PROTO_VARIANTS.some(([k]) => k === variant) ? variant : 'A'
+  const groups = PROTO_GROUPS.filter(g => !g.admin || showFm)
+  const [group, setGroup] = useState('inventory')
+  const [subs, setSubs] = useState(() => Object.fromEntries(PROTO_GROUPS.map(g => [g.key, g.subs[0][0]])))
+  const [hub, setHub] = useState(true) // layout C opens on the hub
+  useEffect(() => { if (v === 'C') setHub(true) }, [v])
+  const g = PROTO_GROUPS.find(x => x.key === group)
+  const sub = subs[group]
+  const go = (k, s) => { setGroup(k); if (s) setSubs(m => ({ ...m, [k]: s })); setHub(false) }
+  const nav = {
+    dash: group === 'inventory' ? sub : group === 'drill' ? 'drill' : null,
+    drill: group === 'drill' ? sub : null,
+    coil: group === 'coil' ? sub : null,
+    sales: group === 'sales' ? sub : group === 'fm' ? 'fm' : null,
+    fm: group === 'fm' ? sub : null,
+    // Clicking a plant on Overview still lands on Plant drill — now a dashboard of its own.
+    open: (k, t) => k === 'drill' ? go('drill', t) : go('inventory', k),
+  }
+  const content = (
+    <ProtoNav.Provider value={nav}>
+      {group === 'inventory' || group === 'drill' ? dashboard : group === 'coil' ? coilTracker
+        : group === 'sales' && sub === 'dispatch' ? dispatch : sales}
+    </ProtoNav.Provider>
+  )
+
+  let body
+  if (v === 'A') {
+    body = (
+      <div className="space-y-4">
+        <div role="tablist" aria-label="Dashboards" className="flex flex-wrap gap-x-1 border-b-2 border-slate-200 dark:border-slate-700">
+          {groups.map(x => (
+            <button key={x.key} type="button" role="tab" aria-selected={x.key === group} onClick={() => go(x.key)}
+              className={`px-4 py-2 -mb-0.5 border-b-2 text-base ${DASH_RING} ${x.key === group
+                ? 'border-indigo-600 text-indigo-700 dark:text-indigo-300 font-semibold'
+                : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>{x.label}</button>
+          ))}
+        </div>
+        <Segmented role="tablist" label={`${g.label} screens`} options={g.subs} value={sub} onChange={s => go(group, s)} />
+        {content}
+      </div>
+    )
+  } else if (v === 'B') {
+    body = (
+      <div className="flex flex-col lg:flex-row gap-6">
+        <nav aria-label="Dashboards" className="lg:w-52 shrink-0 lg:sticky lg:top-4 self-start w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-2">
+          {groups.map(x => (
+            <div key={x.key} className="mb-3 last:mb-0">
+              <div className="px-2 pt-1 pb-1 text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{x.label}</div>
+              {x.subs.map(([k, n]) => {
+                const on = x.key === group && k === sub
+                return (
+                  <button key={k} type="button" aria-current={on ? 'page' : undefined} onClick={() => go(x.key, k)}
+                    className={`block w-full text-left px-2 py-1.5 rounded text-sm border-l-2 ${DASH_RING} ${on
+                      ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-200 font-semibold'
+                      : 'border-transparent text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}`}>{n}</button>
+                )
+              })}
+            </div>
+          ))}
+        </nav>
+        <div className="flex-1 min-w-0">{content}</div>
+      </div>
+    )
+  } else {
+    body = hub ? (
+      <div className="space-y-4">
+        <div>
+          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboards</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Pick a dashboard, or jump straight to one of its screens.</p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          {groups.map(x => (
+            <div key={x.key} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
+              <button type="button" onClick={() => go(x.key)} className={`text-lg font-semibold text-indigo-700 dark:text-indigo-300 hover:underline rounded ${DASH_RING}`}>{x.label} →</button>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{x.blurb}</p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {x.subs.map(([k, n]) => (
+                  <button key={k} type="button" onClick={() => go(x.key, k)}
+                    className={`text-xs px-2.5 py-1 rounded-full border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-slate-700 ${DASH_RING}`}>{n}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    ) : (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <button type="button" onClick={() => setHub(true)} className={`text-indigo-700 dark:text-indigo-300 hover:underline rounded ${DASH_RING}`}>Dashboards</button>
+          <span className="text-slate-400" aria-hidden="true">›</span>
+          <select aria-label="Dashboard" value={group} onChange={e => go(e.target.value)}
+            className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 dark:text-slate-100 font-semibold">
+            {groups.map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
+          </select>
+        </div>
+        <ScreenTabs label={`${g.label} screens`} tabs={g.subs} value={sub} onChange={s => go(group, s)} />
+        {content}
+      </div>
+    )
+  }
+  return <>{body}<div className="h-16" aria-hidden="true" /><ProtoSwitcher variant={v} setVariant={setVariant} /></>
+}
+
 function InventoryApp({ session, onLogout }) {
   const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
   // ── Who signed in decides what renders (ticket #126) ──
@@ -8179,6 +8348,8 @@ function InventoryApp({ session, onLogout }) {
   const isReadOnly = useCallback((key) => access.readOnly.includes(key), [access])
 
   const [tab, setTab] = useState(access.tabs[0]?.key || 'dashboard')
+  // PROTOTYPE (?proto=A|B|C): one Dashboards tab holds Dashboard, Coil Tracker and Sales.
+  const [protoVariant, setProtoVariant] = useState(() => new URLSearchParams(window.location.search).get('proto'))
   // ── Plant selector (tickets #121, #126) — one control in the header, applied globally. An admin
   // gets it and starts on All Plants, so every figure reads exactly as it did before #121;
   // switching it scopes EVERY tab at once — Dashboard, Coil Tracker, the three pipeline stages,
@@ -8320,6 +8491,21 @@ function InventoryApp({ session, onLogout }) {
     </div>
   )
 
+  // PROTOTYPE (?proto=A|B|C): one Dashboards tab holds Dashboard, Coil Tracker and Sales.
+  const navTabs = protoVariant ? access.tabs.filter(t => t.key !== 'coilTracker' && t.key !== 'sales')
+    .map(t => t.key === 'dashboard' ? { ...t, label: 'Dashboards' } : t) : access.tabs
+  const dashboardEl = <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
+          trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
+          trackerPlant={trackerPlant} trackerPlants={plantMasterRows} selectedPlant={selectedPlant} />
+  const coilTrackerEl = <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} plants={plantMasterRows}
+          scopeLabel={selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant, plantMasterRows)} />
+  const salesEl = <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions} coils={plantCoils} babyCoils={plantBabyCoils}
+          estimates={distributorEstimates} setEstimates={setDistributorEstimates}
+          stateRegions={stateRegions} setStateRegions={setStateRegions}
+          plants={plants} distributors={distributors}
+          selectedPlant={selectedPlant} canWiden={access.plantSelector}
+          showFmMmSm={access.fmMmSmSubTab} planningRows={planningRows} allProductions={resolvedProductions} allDispatches={dispatches} />
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors">
       {/* Header */}
@@ -8373,7 +8559,7 @@ function InventoryApp({ session, onLogout }) {
       <nav className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
         <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex gap-0 -mb-px">
-            {access.tabs.map(t => (
+            {navTabs.map(t => (
               <button
                 key={t.key} onClick={() => setTab(t.key)}
                 className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
@@ -8391,11 +8577,14 @@ function InventoryApp({ session, onLogout }) {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
-          trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
-          trackerPlant={trackerPlant} trackerPlants={plantMasterRows} selectedPlant={selectedPlant} />}
-        {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} plants={plantMasterRows}
-          scopeLabel={selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant, plantMasterRows)} />}
+        {tab === 'dashboard' && (protoVariant
+          ? <ProtoDashboards variant={protoVariant} setVariant={setProtoVariant} showFm={access.fmMmSmSubTab}
+              dashboard={dashboardEl} coilTracker={coilTrackerEl} sales={salesEl}
+              dispatch={<DispatchOverview orders={plantOrders} dispatches={plantDispatches} productions={plantProductions} skus={skus}
+                compareOrders={trackerOrders} compareDispatches={trackerDispatches} comparePlant={trackerPlant}
+                stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />} />
+          : dashboardEl)}
+        {tab === 'coilTracker' && coilTrackerEl}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
           operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} viewPlant={selectedPlant} />}
@@ -8411,7 +8600,7 @@ function InventoryApp({ session, onLogout }) {
           plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector}
           orders={plantOrders} productions={plantProductions}
           compareOrders={trackerOrders} compareDispatches={trackerDispatches} comparePlant={trackerPlant}
-          stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />}
+          stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} protoNoOverview={!!protoVariant} />}
         {tab === 'skuMaster' && <Masters skus={skus} setSkus={setSkus} productions={productions}
           orders={orders} dispatches={dispatches} stateRegions={stateRegions}
           plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}
@@ -8429,12 +8618,7 @@ function InventoryApp({ session, onLogout }) {
             and Region by state; neither carries a plant, and #117 puts a per-plant Best Estimate
             out of scope. `selectedPlant` goes in so the tab can withhold the BE comparisons that
             would otherwise divide one plant's invoiced by the whole company's plan. */}
-        {tab === 'sales' && <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions} coils={plantCoils} babyCoils={plantBabyCoils}
-          estimates={distributorEstimates} setEstimates={setDistributorEstimates}
-          stateRegions={stateRegions} setStateRegions={setStateRegions}
-          plants={plants} distributors={distributors}
-          selectedPlant={selectedPlant} canWiden={access.plantSelector}
-          showFmMmSm={access.fmMmSmSubTab} planningRows={planningRows} allProductions={resolvedProductions} allDispatches={dispatches} />}
+        {tab === 'sales' && salesEl}
         {/* Reports follows the selector too (#121). `estimates`/`stateRegions` stay unfiltered for
             the same reason as Sales — neither carries a plant. A scoped workbook announces itself
             in its sheet titles and file name; see the Reports component.
