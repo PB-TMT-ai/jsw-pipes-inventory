@@ -189,6 +189,17 @@ test('at 1366 × 768 the split table fits the width and every days cell prints i
     await expect(t).toHaveText(/^\d+ d$/)   // the group row names the tag
     expect(await t.evaluate(el => el.getBoundingClientRect().width)).toBeLessThan(120)
   }
+  // each days pill sits under its own thickness head: both right-aligned, so their right edges meet (owner, 20-Nov-2026 —
+  // a left pill read as the thickness to its left)
+  const t = splitTable(page, 'South')
+  const heads = await t.locator('thead tr').nth(1).locator('th').evaluateAll(els => els.map(e => e.getBoundingClientRect().right))
+  for (const pill of await tags.all()) {
+    const cell = pill.locator('xpath=ancestor::td[1]')
+    const col = await cell.evaluate(td => [...td.parentElement.children].indexOf(td) - 2)   // Section and Size first
+    const [pr, cr] = await Promise.all([pill.evaluate(el => el.getBoundingClientRect().right), cell.evaluate(el => el.getBoundingClientRect().right)])
+    expect(Math.abs(cr - heads[col])).toBeLessThan(1)        // the cell is the head's column
+    expect(cr - pr).toBeLessThan(10)                          // and the pill hugs its right edge (padding only)
+  }
   // no page-wide horizontal scroll: the table scrolls inside its own box
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
   await splitTable(page, 'South').locator('tr[data-fm-mm-sm-section="FM"]').scrollIntoViewIfNeeded()

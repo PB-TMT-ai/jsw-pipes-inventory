@@ -1033,3 +1033,11 @@ the live site at 04:02 and 04:13 — which empties Dispatch the same way.
   as the Region checkbox — use `getByRole('checkbox', …)`. And `npx playwright test` with 4 workers flakes a few
   unrelated timeouts in this container; re-run those alone before reading them as failures.
 
+## 20-Nov-2026 — Split by tag: a left-aligned pill under a right-aligned head reads as the wrong thickness
+- **What.** In the Split by tag table the FG days of cover pills were `text-left` while the thickness heads were
+  `text-right`. On a wide screen the columns stretch, so a pill sat nearer the head to its LEFT (25×25's 1.6 mm "1 d"
+  read as 1.2). The owner caught it on live data.
+- **Fix.** `FmMmSmCell` takes `right`; the two block-table callers pass it. e2e (by-tag 1366 test) checks each pill's
+  cell is its head's column and the pill hugs the cell's right edge — red before the fix (75 px off), green after.
+- **Prevention.** Content aligns with its head (DESIGN.md §7). Check a grid at the owner's screen width, not only 1366.
+

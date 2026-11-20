@@ -80,6 +80,9 @@ The dashboards work changed navigation, the control row, the strip and the names
 grid was restyled** — cell colours, tints, the Tracker grid, the drill grids and the size grid are
 as they were. A change to how a table or grid looks is shown to the owner first, on a preview.
 
+- **Alignment:** a cell's content aligns the way its column head does. Right-aligned heads (thickness columns) get
+  right-aligned figures **and** pills, so a pill never reads as the column to its left (owner-confirmed fix, 20-Nov-2026).
+
 ## 8. Names
 
 | On screen | Means | Note |

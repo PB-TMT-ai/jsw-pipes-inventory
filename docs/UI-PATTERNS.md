@@ -1134,7 +1134,9 @@ longer tabs. Where a bullet below still says "tab", read the screen named here; 
   tint, Healthy no fill with a green dot, Heavy purple tint, Too much near-black); the bracket word on hover and in the key (owner's
   choice, 17-Nov-2026, over #373's word-always). Stock with no sales prints *No use*; no stock and no sales prints the dim *No sales*
   chip; a cell with figures and no SKU of the plan prints "—" (hover: *Not tagged / Outside the plan*); two SKUs on one cell print
-  "2 SKUs" with an amber note — never a guessed tag. In the Split by tag table a days cell drops the tag (`7 d`): its group row names it. Every tag cell is **narrow** (under 120 px, CONTEXT.md *Cover bracket*), so it
+  "2 SKUs" with an amber note — never a guessed tag. In the Split by tag table a days cell drops the tag (`7 d`): its group row names it. In the block tables (Split by tag, and Raw
+  material with it on) the pill is **right-aligned** like the thickness heads above it (`FmMmSmCell`'s `right`; owner, 20-Nov-2026 — a
+  left pill read as the thickness to its left). The per-thickness grids keep left pills under left heads. Every tag cell is **narrow** (under 120 px, CONTEXT.md *Cover bracket*), so it
   always prints number + tag; the lists always print the word.
 - **End of each block** (`FmMmSmCheck`): a three-row table *Tagged (N cells)* (cells, since it follows the Plant filter and dates) / **Not tagged / Outside the plan** / *Grid total*
   for Closing stock, Dispatch and Pending to Dispatch — tagged + not tagged = the grid total — and a folded list **SKUs not shown in

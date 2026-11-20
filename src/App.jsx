@@ -4376,14 +4376,16 @@ const FM_MM_SM_TAG_TIP = `${FM_MM_SM_NAME} and FG days of cover (blended) — as
 // bracket word on hover (owner, 17-Nov-2026: narrow cells print number + tag). Nothing is computed here.
 // `cellKey` / `found` (#380): the cell a Make next · Stock stuck row finds, ringed while `found`.
 // `edge` = the left rule; off inside a block of the By FM / MM / SM tab, where only a block's first thickness has it.
-function FmMmSmCell({ label, td, cellKey, found = false, edge = true }) {
+// `right`: in a block table (`FmMmSmBlockTable`) the thickness heads are right-aligned, so the pill is too — a left pill
+// there sat closer to the column on its left and read as that thickness (owner, 20-Nov-2026).
+function FmMmSmCell({ label, td, cellKey, found = false, edge = true, right = false }) {
   const look = label.kind === 'days' ? `rounded-full px-1.5 py-px ${COVER_PILL[label.bracket] || ''}`
     : label.kind === 'none' ? `rounded px-1.5 py-px ${MOVES_CHIP['No sales']}`
     : label.kind === 'multi' ? 'text-amber-600 dark:text-amber-400 font-medium'
     : 'text-slate-400 dark:text-slate-500'
   return (
     <td title={label.title} data-cell-key={cellKey} data-found={found ? 'true' : undefined}
-      className={`${td} text-left whitespace-nowrap ${edge ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${found ? 'ring-2 ring-inset ring-indigo-500 bg-indigo-50 dark:bg-indigo-950' : ''}`}>
+      className={`${td} ${right ? 'text-right' : 'text-left'} whitespace-nowrap ${edge ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${found ? 'ring-2 ring-inset ring-indigo-500 bg-indigo-50 dark:bg-indigo-950' : ''}`}>
       <span data-fm-mm-sm-cell={label.kind} data-cover={label.word || undefined} className={`inline-flex items-center gap-1 leading-tight tabular-nums ${look}`}>
         {label.kind === 'days' && label.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
         {label.text}
@@ -4555,7 +4557,7 @@ function FmMmSmTagSplitTable({ sections, region, chip, required, stockKnown, blo
   const blocks = [
     ...(sections.some(s => s.days) ? [{ key: 'days', label: 'FG days of cover', tip: FM_MM_SM_TAG_TIP, tone: FM_MM_SM_DAYS_TONE,
       cell: (r, t, edge) => r.isTotal || !r.p?.s.days || !r.cells[t] ? <td className={`${td} ${edge}`} />
-        : <FmMmSmCell td={td} edge={!!edge} label={untag(fmMmSmCellLabel(r.p.onCell[`${r.section}|${r.size}|${t}`] || []))} /> }] : []),
+        : <FmMmSmCell td={td} edge={!!edge} right label={untag(fmMmSmCellLabel(r.p.onCell[`${r.section}|${r.size}|${t}`] || []))} /> }] : []),
     ...[
       ...(chip.rowFigures && sections.some(s => s.rate) ? [{ key: 'rate', label: 'Blended monthly rate', tip: `T a month. ${asOfTip}`, tone: 'bg-emerald-50 dark:bg-emerald-900/30' }] : []),
       ...(chip.rowFigures ? [{ key: 'inventory', label: 'Current inventory', tip: `T, stock now. ${asOfTip}`, tone: 'bg-amber-50 dark:bg-amber-900/30' }] : []),
@@ -4605,7 +4607,7 @@ function FmMmSmRawTable({ raw, name, cut, landed, empty, byBlocks = false }) {
     <FmMmSmBlockTable name={name} thicknesses={g.thicknesses} rows={rows} blocks={[
       { key: 'days', label: `FG days of cover · ${FM_MM_SM_NAME}`, tip: FM_MM_SM_TAG_TIP, tone: FM_MM_SM_DAYS_TONE,
         cell: (r, k, edge) => r.isTotal || !r.cells[k] ? <td className={`${td} ${edge}`} />
-          : <FmMmSmCell td={td} edge={!!edge} label={fmMmSmCellLabel(landed[`${r.section}|${r.size}|${k}`] || [])} cellKey={`${r.section}|${r.size}|${k}`} /> },
+          : <FmMmSmCell td={td} edge={!!edge} right label={fmMmSmCellLabel(landed[`${r.section}|${r.size}|${k}`] || [])} cellKey={`${r.section}|${r.size}|${k}`} /> },
       ...FM_MM_SM_RAW_MEASURES.map(([m, label, tone]) => ({ key: m, label, tone, total: r => r.total[m],
         cell: (r, k, edge) => {
           const c = r.isTotal ? g.colTotals[k] : r.cells[k]
