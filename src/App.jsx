@@ -4518,6 +4518,8 @@ function FmMmSmTagSplitTable({ sections, region, chip, required, stockKnown, blo
   const num = `${td} text-right tabular-nums whitespace-nowrap`
   const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
   const asOfTip = `${region}-wide, as of today — the SKU’s own figure, as on the Production Planning columns; the Plant filter and From / To do not change it.`
+  // The group row names the tag, so a cell prints its days only ("7 d", not "7 d FM").
+  const untag = (l) => l.kind === 'days' ? { ...l, text: String(l.text).replace(/\s+(FM|MM|SM)$/, '') } : l
   const parts = sections.map(s => {
     const pivot = salesSizePivot(s.lines, required)
     const onCell = {}
@@ -4555,9 +4557,9 @@ function FmMmSmTagSplitTable({ sections, region, chip, required, stockKnown, blo
   const skuTotal = (r, k) => !r.p ? parts.reduce((a, { s }) => a + (has(s, k) ? s.totals[k] : 0), 0)
     : !has(r.p.s, k) ? 0 : r.isTotal ? r.p.s.totals[k] : r.p.s.sizeTotals[`${r.section}|${r.size}`]?.[k] ?? 0
   const blocks = [
-    ...(sections.some(s => s.days) ? [{ key: 'days', label: `FG days of cover · ${FM_MM_SM_NAME}`, tip: FM_MM_SM_TAG_TIP, tone: FM_MM_SM_DAYS_TONE,
+    ...(sections.some(s => s.days) ? [{ key: 'days', label: 'FG days of cover', tip: FM_MM_SM_TAG_TIP, tone: FM_MM_SM_DAYS_TONE,
       cell: (r, t, edge) => r.isTotal || !r.p?.s.days || !r.cells[t] ? <td className={`${td} ${edge}`} />
-        : <FmMmSmCell td={td} edge={!!edge} label={fmMmSmCellLabel(r.p.onCell[`${r.section}|${r.size}|${t}`] || [])} /> }] : []),
+        : <FmMmSmCell td={td} edge={!!edge} label={untag(fmMmSmCellLabel(r.p.onCell[`${r.section}|${r.size}|${t}`] || []))} /> }] : []),
     ...[
       ...(chip.rowFigures && sections.some(s => s.rate) ? [{ key: 'rate', label: 'Blended monthly rate', tip: `T a month. ${asOfTip}`, tone: 'bg-emerald-50 dark:bg-emerald-900/30' }] : []),
       ...(chip.rowFigures ? [{ key: 'inventory', label: 'Current inventory', tip: `T, stock now. ${asOfTip}`, tone: 'bg-amber-50 dark:bg-amber-900/30' }] : []),
@@ -4758,7 +4760,9 @@ function FmMmSmRawPlants({ raw, region }) {
 //               as stacked sections FM, MM, SM, No sales, Not tagged / Outside the plan (`fmMmSmTagSections`);
 //               the Raw material chip (#382) stacks the same sections
 function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils = [], skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS,
-  region = null, tagRows = null, hideExport = false, statusRows = null, worklists = false, view = 'grid', exportRef = null }) {
+  region = null, tagRows = null, hideExport = false, statusRows = null, worklists = false, view = 'grid', exportRef = null,
+  showGrid = true, onFound = null }) {
+  // showGrid (FM / MM / SM): false on a lists-only screen; a SKU clicked there calls `onFound` to open the grid screen.
   // `view` is a Dashboards sub-tab (ADR-0018): Size × Thickness, Production check or SKU list. `exportRef`: this
   // grid's files go to the dashboard's one Export menu instead of its own ⬇ CSV buttons.
   // Split by tag (ADR-0018, FM / MM / SM only): the grid as one table with FM, MM, SM, No sales and Not tagged as
@@ -4863,9 +4867,9 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   // Make next · Stock stuck (#380): the region's two lists, both orders, with this grid's own cell figures.
   const worklistsOn = worklists && !!tagRows
   const lists = useMemo(() => !worklistsOn ? null : {
-    priority: fmMmSmWorklists(tagRows, { gridLines: gridRun.lines, required: gridRun.required, raw: rawSplit }),
-    size: fmMmSmWorklists(tagRows, { order: 'size', gridLines: gridRun.lines, required: gridRun.required, raw: rawSplit }),
-  }, [worklistsOn, tagRows, gridRun, rawSplit])
+    priority: fmMmSmWorklists(statusRows || tagRows, { gridLines: gridRun.lines, required: gridRun.required, raw: rawSplit }),
+    size: fmMmSmWorklists(statusRows || tagRows, { order: 'size', gridLines: gridRun.lines, required: gridRun.required, raw: rawSplit }),
+  }, [worklistsOn, tagRows, statusRows, gridRun, rawSplit])
   // A SKU clicked in a list is found in the grid: Size × Thickness, the FM / MM / SM view, the filters cleared
   // when they cut it, then its cell scrolled to and ringed for a moment. A SKU the grid has no cell for says why.
   const gridRef = useRef(null)
@@ -4877,7 +4881,8 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
     setShow(FM_MM_SM_CHIP.key); setByTag(false) // the worklists sit on a Size × Thickness screen; the cell is found in the single grid
     if (!fmMmSmCut([row], { sections, sizes, thicknesses: thks.map(Number) }).length) { setSections([]); setSizes([]); setThks([]) }
     setFound({ key: row.cellKey, id: row.id, note: '', at: Date.now() })
-  }, [wholeJoin, sections, sizes, thks, selectedPlant, pickedPlants])
+    onFound?.()
+  }, [wholeJoin, sections, sizes, thks, selectedPlant, pickedPlants, onFound])
   useEffect(() => {
     if (!found) return undefined
     if (found.key) {
@@ -4886,7 +4891,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
     }
     const t = setTimeout(() => setFound(f => (f && f.at === found.at ? null : f)), found.key ? 2500 : 6000)
     return () => clearTimeout(t)
-  }, [found])
+  }, [found, showGrid])
   // By FM / MM / SM tab (#381): the same lines and SKUs as tagJoin, split into the tag sections.
   const tagSections = useMemo(() => {
     if (!byTag || !tagRows) return null
@@ -5358,11 +5363,12 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
       {tagJoin && <FmMmSmCheck join={tagJoin} region={region} from={from} to={to} plantScoped={selectedPlant !== ALL_PLANTS || !!pickedPlants} />}
     </DashBlock>
   )
-  if (!lists) return gridSection
+  const grid = showGrid && <div ref={gridRef}>{gridSection}</div>
+  if (!lists) return grid || null
   return (
     <div className="space-y-4">
       <FmMmSmWorklists region={region} lists={lists} onFind={findSku} found={found} to={to} />
-      <div ref={gridRef}>{gridSection}</div>
+      {grid}
     </div>
   )
 }
@@ -5492,47 +5498,142 @@ function FmMmSmWorklist({ listKey, name, how, region, lists, onFind, to }) {
 // blocks (#379 Status key, #380 Make next · Stock stuck, #381 By FM / MM / SM fill them), and every tab ends
 // with the same region blocks, one shown at a time (#389, a South | West switch and one line of figures), each the Dashboard's Size × Thickness section fixed to
 // that region (its own filters, its three views, FG age last), then the Tagged / Not tagged check.
-// The Dashboards › FM / MM / SM sub-tabs (ADR-0018). The last two are the region grid's other two views, lifted
-// out of the grid so no screen carries a third row of tabs; tag and cover show only on the first two.
-const FM_MM_SM_TABS = [['status', 'Status key'], ['next', 'Make next · Stock stuck'],
-  ['check', 'Production check'], ['list', 'SKU list']]
+// The Dashboards › FM / MM / SM sub-tabs (ADR-0018). The grid is a screen of its own, never repeated under the
+// Status key or the lists. PROTOTYPE (?proto=M1|M2|M3): three ways to place the Status key — throwaway, pick one.
+const FM_MM_SM_VIEWS = [['check', 'Production check'], ['list', 'SKU list']]
+const FM_PROTO = [
+  ['M1', 'Status key + lists on one screen', [['key', 'Status & lists'], ['grid', 'Grid'], ...FM_MM_SM_VIEWS]],
+  ['M2', 'Status key on top of the grid', [['grid', 'Status key & grid'], ['next', 'Make next · Stock stuck'], ...FM_MM_SM_VIEWS]],
+  ['M3', 'Each on its own screen', [['status', 'Status key'], ['next', 'Make next · Stock stuck'], ['grid', 'Grid'], ...FM_MM_SM_VIEWS]],
+]
+const fmProto = (v) => FM_PROTO.find(([k]) => k === v) || FM_PROTO[0]
+function ProtoSwitcher({ variant, setVariant }) {
+  const i = Math.max(0, FM_PROTO.findIndex(([k]) => k === variant))
+  const step = (d) => {
+    const k = FM_PROTO[(i + d + FM_PROTO.length) % FM_PROTO.length][0]
+    const u = new URL(window.location.href); u.searchParams.set('proto', k); window.history.replaceState(null, '', u)
+    setVariant(k)
+  }
+  const btn = 'w-8 h-8 rounded-full hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white'
+  return (
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-full bg-fuchsia-700 text-white shadow-2xl ring-2 ring-white px-2 py-1 text-sm">
+      <button type="button" aria-label="Previous variant" onClick={() => step(-1)} className={btn}>←</button>
+      <span className="font-semibold whitespace-nowrap">Prototype {FM_PROTO[i][0]} — {FM_PROTO[i][1]}</span>
+      <button type="button" aria-label="Next variant" onClick={() => step(1)} className={btn}>→</button>
+    </div>
+  )
+}
 
 function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant,
-  planningRows, allProductions, allDispatches, inner = 'status' }) {
+  planningRows, allProductions, allDispatches, inner = 'key', proto = 'M1', onNavigate = () => {} }) {
   const todayStr = today()
+  // What the open screen shows. The grid is drawn on one screen only; Production check and SKU list are its views.
+  const showKey = inner === 'key' || inner === 'status' || (proto === 'M2' && inner === 'grid')
+  const showLists = inner === 'key' || inner === 'next'
+  const showGrid = ['grid', 'check', 'list'].includes(inner)
   const gridView = inner === 'check' || inner === 'list' ? inner : 'grid'
   // The tag feed: whole stores, every plant, as of today (fmMmSmFeed). The grids below get the
   // plant-filtered stores, so their Closing stock, Dispatch, Pending and Production required follow the header.
   const feed = useMemo(() => fmMmSmFeed({ productions: allProductions, dispatches: allDispatches, skus, plants, stored: planningRows, today: todayStr }),
     [allProductions, allDispatches, skus, plants, planningRows, todayStr])
-  // Status key (#379): the box picked per region ({ South: key | null, West: … }); it narrows only that
-  // region's grid, and only while the Status key tab is open.
+  // Status key (#379): the cell picked per region ({ South: key | null, West: … }). It narrows that region's lists
+  // and grid on every screen until cleared (the chip on the block); on M3 picking one opens the grid.
   const [statusPick, setStatusPick] = useState({})
   // #389: one region block at a time. Both stay mounted (the inactive one is `hidden`) so a region keeps its own filters, dates and chip.
   const [shown, setShown] = useState('South')
-  const pickStatus = (region, key) => { setShown(region); setStatusPick(p => ({ ...p, [region]: p[region] === key ? null : key })) }
+  const pickStatus = (region, key) => {
+    setShown(region)
+    setStatusPick(p => ({ ...p, [region]: p[region] === key ? null : key }))
+    if (proto === 'M3' && key) onNavigate('fm', 'grid')
+  }
+  const gridScreen = fmProto(proto)[2].find(([k]) => k === 'grid')?.[0] || 'grid'
+  const shownBlock = feed.find(b => b.region === shown)
   return (
     <div className="space-y-6">
-      {/* #390: the key sits on the screens that draw tag and cover; the Status key tab carries every limit itself. */}
-      {inner === 'next' && (
-        <div className="flex justify-end">
+      <FmMmSmRegionLine feed={feed} plants={plants} shown={shown} onShow={setShown} />
+      {(showLists || inner === 'grid') && (
+        <div className="flex justify-end -mt-4">
           <PopMenu label="Key: days of cover" className="right-0 w-max max-w-[40rem] p-3"><FmMmSmKey /></PopMenu>
         </div>
       )}
-      {/* The open tab's own content goes here, above the region blocks. */}
-      {inner === 'status' ? <FmMmSmStatusKey feed={feed} picked={statusPick} onPick={pickStatus} />
-        : inner === 'next'
-        ? <p className="text-sm text-slate-500 dark:text-slate-400"><strong>Make next</strong> and <strong>Stock stuck</strong> sit at the top of the region shown, never mixed. Click a SKU to find it in that region’s grid.</p>
-        : <p className="text-sm text-slate-500 dark:text-slate-400">The region shown, as <strong>{inner === 'check' ? 'Production check' : 'SKU list'}</strong> — the same figures as Sales › {inner === 'check' ? 'Production check' : 'SKU list'} with Region on that region. Tag and cover show only on the first two screens.</p>}
-      <FmMmSmRegionLine feed={feed} plants={plants} shown={shown} onShow={setShown} />
-      {feed.map(b => (
+      {showKey && shownBlock && <FmMmSmStatusMatrix block={shownBlock} picked={statusPick[shown] || null} onPick={k => pickStatus(shown, k)}
+        how={proto === 'M1' ? 'narrows the lists below and the grid' : proto === 'M2' ? 'narrows the grid below' : 'opens the grid narrowed to them'} />}
+      {(inner === 'check' || inner === 'list') && <p className="text-sm text-slate-500 dark:text-slate-400">The region shown, as <strong>{inner === 'check' ? 'Production check' : 'SKU list'}</strong> — the same figures as Sales › {inner === 'check' ? 'Production check' : 'SKU list'} with Region on that region. Tag and cover show on the grid screen.</p>}
+      {(showLists || showGrid) && feed.map(b => (
         <FmMmSmRegionBlock key={b.region} block={b} hidden={b.region !== shown} orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils}
           skus={skus} plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant} month={todayStr.slice(0, 7)}
-          view={gridView}
-          status={inner === 'status' ? statusPick[b.region] || null : null} onClearStatus={() => pickStatus(b.region, null)}
-          worklists={inner === 'next'} />
+          view={gridView} showGrid={showGrid} onFound={() => onNavigate('fm', gridScreen)}
+          status={statusPick[b.region] || null} onClearStatus={() => pickStatus(b.region, null)}
+          worklists={showLists} />
       ))}
     </div>
+  )
+}
+
+// The Status key as one matrix for the region shown (owner's pick, 20-Nov-2026): rows FM, MM, SM, No sales;
+// columns the five FG days of cover brackets, then No use and No sales. Each SKU sits in exactly one cell
+// (`fmMmSmStatusBoxes`), so rows and columns add up to the region line's SKUs. Cell = SKUs · Current inventory.
+function FmMmSmStatusMatrix({ block, picked, onPick, how }) {
+  const { region, rows } = block
+  const { groups, total } = fmMmSmStatusBoxes(rows)
+  const tagGroups = groups.filter(g => g.tag !== 'No sales')
+  const noSales = groups.find(g => g.tag === 'No sales')
+  const cols = [...tagGroups[0].boxes.map((b, i) => ({ word: b.word, bracket: b.bracket, at: g => g.tag === 'No sales' ? null : g.boxes[i] })),
+    ...noSales.boxes.map((b, i) => ({ word: b.word, bracket: null, at: g => g.tag === 'No sales' ? g.boxes[i] : null }))]
+  const colTotal = (c) => groups.map(c.at).filter(Boolean).reduce((t, b) => ({ count: t.count + b.count, inventory: t.inventory + b.inventory }), { count: 0, inventory: 0 })
+  const fig = (x) => <><span className="font-semibold text-slate-900 dark:text-white">{x.count}</span><span className="text-slate-500 dark:text-slate-400"> · {fmtTonnes(x.inventory)} T</span></>
+  const th = 'px-3 py-1.5 font-semibold whitespace-nowrap'
+  return (
+    <section aria-label={`Status key · ${region}`} className="space-y-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4">
+        <h3 className="text-base font-semibold text-slate-900 dark:text-white">Status key · {region}</h3>
+        <span className="text-xs text-slate-500 dark:text-slate-400">SKUs · Current inventory, as of today. Click a cell: it {how}.</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm tabular-nums border-y border-slate-200 dark:border-slate-700" aria-label={`Status key · ${region}`}>
+          <thead>
+            <tr className="text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
+              <th className={`${th} text-left`}>{FM_MM_SM_NAME}</th>
+              {cols.map(c => (
+                <th key={c.word} className={`${th} text-right`}>
+                  {c.bracket == null ? c.word : <span className={`inline-flex items-center gap-1 rounded-full px-2 py-px text-xs ${COVER_PILL[c.bracket]}`}>
+                    {c.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}{c.word}</span>}
+                </th>
+              ))}
+              <th className={`${th} text-right border-l border-slate-200 dark:border-slate-700`}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map(g => (
+              <tr key={g.tag} className="border-t border-slate-100 dark:border-slate-800">
+                <td className="px-3 py-1 whitespace-nowrap"><span className={`inline-block rounded px-1.5 py-px text-xs leading-tight ${MOVES_CHIP[g.tag] || ''}`}>{g.tag}</span></td>
+                {cols.map(c => {
+                  const b = c.at(g)
+                  if (!b) return <td key={c.word} className="px-3 py-1 text-right text-slate-300 dark:text-slate-600">–</td>
+                  const on = picked === b.key
+                  return (
+                    <td key={c.word} className="px-1 py-0.5 text-right">
+                      <button type="button" aria-pressed={on} disabled={!b.count && !on} onClick={() => onPick(b.key)}
+                        aria-label={`${region} · ${fmMmSmStatusLabel(b.key)}`}
+                        title={`${fmMmSmStatusLabel(b.key)} (${b.limit}): ${fmMmSmSkuCount(b.count)}, Current inventory ${fmtTonnes(b.inventory)} T${b.bracket == null ? '' : `, Blended monthly rate ${fmtTonnes(b.rate)} T a month`}`}
+                        className={`w-full text-right rounded px-2 py-0.5 whitespace-nowrap ${DASH_RING} ${on ? 'bg-indigo-600 [&_span]:!text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800'} disabled:opacity-30 disabled:cursor-default`}>
+                        {fig(b)}
+                      </button>
+                    </td>
+                  )
+                })}
+                <td className="px-3 py-1 text-right whitespace-nowrap border-l border-slate-200 dark:border-slate-700">{fig(g)}</td>
+              </tr>
+            ))}
+            <tr className="border-t border-slate-300 dark:border-slate-600 font-semibold">
+              <td className="px-3 py-1">Total</td>
+              {cols.map(c => <td key={c.word} className="px-3 py-1 text-right whitespace-nowrap">{fig(colTotal(c))}</td>)}
+              <td className="px-3 py-1 text-right whitespace-nowrap border-l border-slate-200 dark:border-slate-700">{fig(total)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }
 
@@ -5572,87 +5673,11 @@ function FmMmSmKey() {
   )
 }
 
-// The Status key tab (#379): one key, the bracket words with their day limits per FM / MM / SM, then No use and
-// No sales, and per box the SKU count and Current inventory of South and of West side by side — never summed
-// (a planning SKU belongs to one region). Read off the feed's rows (`fmMmSmStatusBoxes`), the same tag and cover
-// as the grid's cells, so the two never disagree. Region-wide, as of today. Clicking a box narrows that region's
-// grid only; clicking it again (or the chip on the block) clears it.
 const fmMmSmSkuCount = (n) => `${n} SKU${n === 1 ? '' : 's'}`
-function FmMmSmStatusKey({ feed, picked = {}, onPick }) {
-  const byRegion = feed.map(b => ({ region: b.region, boxes: fmMmSmStatusBoxes(b.rows) }))
-  const groups = byRegion[0]?.boxes.groups || []
-  const th = 'px-2 py-1 text-left font-semibold whitespace-nowrap'
-  const figure = (x) => `${fmMmSmSkuCount(x.count)} · ${fmtTonnes(x.inventory)} T`
-  const label = (b) => b.bracket == null ? b.word : `${b.word} · ${b.tag}`
-  return (
-    <div className="text-xs text-slate-600 dark:text-slate-300 space-y-1">
-      <p><strong>Status key</strong> — each SKU of a region sits in one box. Click a box to narrow that region’s grid to it.</p>
-      <FmMmSmWorkedOut>
-        A box is a SKU’s {FM_MM_SM_NAME} tag and FG days of cover bracket, or
-        <em> No use</em> (stock, no sales) or <em>No sales</em> (no stock, no sales). Per box: SKU count · Current inventory, {byRegion.map(r => r.region).join(' and ')} apart,
-        as of today — the Plant filter and the dates never change a box.
-      </FmMmSmWorkedOut>
-      <div className="overflow-x-auto">
-        <table className="text-xs border border-slate-200 dark:border-slate-700 rounded-md" aria-label="Status key">
-          <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-200">
-            <tr>
-              <th className={th}>Status</th><th className={th}>FG days of cover</th>
-              {byRegion.map(r => <th key={r.region} className={th}>{r.region}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {groups.map((g, gi) => (
-              <React.Fragment key={g.tag}>
-                <tr className="border-t-2 border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 font-semibold">
-                  <td className="px-2 py-1"><span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[g.tag] || ''}`}>{g.tag}</span></td>
-                  <td className="px-2 py-1 text-slate-400 dark:text-slate-500">{g.tag === 'No sales' ? 'blended rate under 0.05 T a month' : 'all brackets'}</td>
-                  {byRegion.map(r => <td key={r.region} className="px-2 py-1 tabular-nums whitespace-nowrap">{figure(r.boxes.groups[gi])}</td>)}
-                </tr>
-                {g.boxes.map((b, bi) => (
-                  <tr key={b.key} className="border-t border-slate-200 dark:border-slate-700">
-                    <td className="px-2 py-1 pl-4 whitespace-nowrap">
-                      {b.bracket == null
-                        ? <span className="text-slate-500 dark:text-slate-400">{b.word}</span>
-                        : <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-px leading-tight ${COVER_PILL[b.bracket]}`}>
-                            {b.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}{b.word}
-                          </span>}
-                    </td>
-                    <td className="px-2 py-1 tabular-nums whitespace-nowrap">{b.limit}</td>
-                    {byRegion.map(r => {
-                      const x = r.boxes.groups[gi].boxes[bi]
-                      const on = picked[r.region] === b.key
-                      return (
-                        <td key={r.region} className="px-1 py-0.5">
-                          <button type="button" aria-pressed={on} disabled={!x.count && !on} onClick={() => onPick(r.region, b.key)}
-                            aria-label={`${r.region} · ${label(b)}`}
-                            title={`${r.region} · ${label(b)}: ${fmMmSmSkuCount(x.count)}, Current inventory ${fmtTonnes(x.inventory)} T${
-                              b.bracket == null ? '' : `, Blended monthly rate ${fmtTonnes(x.rate)} T a month`}. ${on ? 'Click to show every SKU again.' : `Click to narrow the ${r.region} grid to these SKUs.`}`}
-                            className={`w-full text-left rounded px-1.5 py-0.5 tabular-nums whitespace-nowrap border ${on
-                              ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/40 font-semibold'
-                              : 'border-transparent hover:border-slate-300 dark:hover:border-slate-600'} disabled:opacity-40 disabled:cursor-default`}>
-                            {figure(x)}
-                          </button>
-                        </td>
-                      )
-                    })}
-                  </tr>
-                ))}
-              </React.Fragment>
-            ))}
-            <tr className="border-t-2 border-slate-300 dark:border-slate-600 font-semibold bg-slate-50 dark:bg-slate-900">
-              <td className="px-2 py-1" colSpan={2}>Total</td>
-              {byRegion.map(r => <td key={r.region} className="px-2 py-1 tabular-nums whitespace-nowrap">{figure(r.boxes.total)}</td>)}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
 
 // One region block: the Dashboard's grid fixed to the region (its figures are on the region line above).
 function FmMmSmRegionBlock({ block, hidden = false, orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant, month,
-  status = null, onClearStatus = null, worklists = false, view = 'grid' }) {
+  status = null, onClearStatus = null, worklists = false, view = 'grid', showGrid = true, onFound = null }) {
   const { region, rows } = block
   // A Status key box picked for this region (#379): the grid keeps its SKUs' cells and tags them (`fmMmSmStatusTagRows`).
   const statusRows = useMemo(() => status ? fmMmSmStatusCut(rows, status) : null, [rows, status])
@@ -5673,12 +5698,12 @@ function FmMmSmRegionBlock({ block, hidden = false, orders, dispatches, producti
             className="inline-flex items-center gap-1 rounded-full border border-indigo-500 bg-indigo-50 dark:bg-indigo-900/40 px-2 py-0.5 font-medium">
             {fmMmSmStatusLabel(status)} · {fmMmSmSkuCount(statusRows.length)} <span aria-hidden="true">✕</span>
           </button>
-          <span className="text-slate-400 dark:text-slate-500">the {region} grid shows only these SKUs’ cells; the figures above stay {region}-wide.</span>
+          <span className="text-slate-400 dark:text-slate-500">{showGrid ? `the ${region} grid shows only these SKUs’ cells` : 'the lists show only these SKUs'}; the region line stays {region}-wide.</span>
         </p>
       )}
       <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus} plants={plants}
         stateRegions={stateRegions} distributors={distributors} distributor="" month={month} selectedPlant={selectedPlant}
-        region={region} tagRows={gridTagRows} hideExport statusRows={statusRows} worklists={worklists} view={view} />
+        region={region} tagRows={gridTagRows} hideExport statusRows={statusRows} worklists={worklists} view={view} showGrid={showGrid} onFound={onFound} />
     </section>
   )
 }
@@ -8148,17 +8173,18 @@ const DASHBOARDS = [
   { key: 'coil', label: 'Coil Tracker', screens: COIL_TRACKER_VIEWS },
   { key: 'sales', label: 'Sales', screens: [['month', 'This month'], ['dist', 'Distributor'], ['grid', 'Size × Thickness'],
     ['check', 'Production check'], ['list', 'SKU list'], ['monthwise', 'Month-wise'], ['dispatch', 'Dispatch']] },
-  { key: 'fm', label: FM_MM_SM_NAME, screens: FM_MM_SM_TABS, admin: true },
+  { key: 'fm', label: FM_MM_SM_NAME, screens: FM_PROTO[0][2], admin: true },
 ]
 function Dashboards({ showFm, children }) {
-  const boards = DASHBOARDS.filter(b => !b.admin || showFm)
+  const [proto, setProto] = useState(() => fmProto(new URLSearchParams(window.location.search).get('proto'))[0])
+  const boards = DASHBOARDS.filter(b => !b.admin || showFm).map(b => b.key === 'fm' ? { ...b, screens: fmProto(proto)[2] } : b)
   // The open dashboard and each one's last screen: a UI preference kept on this device (`jsw:dashScreen`),
   // never data. Anything unreadable — an older value, a dashboard this login does not get — opens the first.
   const [pick, setPick] = useState(() => { const v = LS.get('jsw:dashScreen'); return v && typeof v === 'object' ? v : {} })
   const board = boards.find(b => b.key === pick.board) || boards[0]
   const screenOf = (key) => {
     const v = pick.screens?.[key]
-    const { screens } = DASHBOARDS.find(b => b.key === key)
+    const { screens } = boards.find(b => b.key === key) || DASHBOARDS.find(b => b.key === key)
     return screens.some(([k]) => k === v) ? v : screens[0][0]
   }
   const go = (key, screen) => {
@@ -8171,7 +8197,8 @@ function Dashboards({ showFm, children }) {
     <div className="space-y-4">
       <ScreenTabs label="Dashboard" tabs={boards.map(b => [b.key, b.label])} value={board.key} onChange={k => go(k)} />
       <Segmented role="tablist" label={`${board.label} screens`} options={board.screens} value={screen} onChange={k => go(board.key, k)} />
-      {children({ board: board.key, screen, screenOf, go })}
+      {children({ board: board.key, screen, screenOf, go, proto })}
+      {board.key === 'fm' && <ProtoSwitcher variant={proto} setVariant={setProto} />}
     </div>
   )
 }
@@ -8404,7 +8431,7 @@ function InventoryApp({ session, onLogout }) {
             is a regional fact the header plant selector must not move. `estimates` and `stateRegions` stay
             UNFILTERED for Sales — Best Estimate is keyed by distributor and Region by state; neither carries a
             plant, and #117 puts a per-plant Best Estimate out of scope. */}
-        {tab === 'dashboard' && <Dashboards showFm={access.fmMmSmSubTab}>{({ board, screen, screenOf, go }) =>
+        {tab === 'dashboard' && <Dashboards showFm={access.fmMmSmSubTab}>{({ board, screen, screenOf, go, proto }) =>
           board === 'inventory' || board === 'drill'
             ? <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
                 trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
@@ -8422,10 +8449,11 @@ function InventoryApp({ session, onLogout }) {
                 estimates={distributorEstimates} setEstimates={setDistributorEstimates}
                 stateRegions={stateRegions} setStateRegions={setStateRegions}
                 plants={plants} distributors={distributors}
-                selectedPlant={selectedPlant} canWiden={access.plantSelector} view={screen} />
+                selectedPlant={selectedPlant} canWiden={access.plantSelector} view={screen} onNavigate={go} />
             : <FmMmSmSubTab orders={plantOrders} dispatches={plantDispatches} productions={plantProductions} coils={plantCoils} babyCoils={plantBabyCoils} skus={skus}
                 plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant}
-                planningRows={planningRows} allProductions={resolvedProductions} allDispatches={dispatches} inner={screen} />
+                planningRows={planningRows} allProductions={resolvedProductions} allDispatches={dispatches} inner={screen}
+                proto={proto} onNavigate={go} />
         }</Dashboards>}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
           operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}
