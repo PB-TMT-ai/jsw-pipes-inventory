@@ -54,6 +54,7 @@ screen, one control system) are in `DESIGN.md`.
 - No table or grid was restyled. Restyling one needs the owner's confirmation first (`DESIGN.md` §7).
 - Plant logins get the same tab; their dashboard row stops at Sales — FM / MM / SM stays behind
   `accessFor().fmMmSmSubTab`.
+- FM / MM / SM's region switch gained **All** (owner, 20-Nov-2026): every region one under the other, never added up.
 - A Status key pick now holds on every FM / MM / SM screen until its chip clears it (it used to clear
   when the tab changed). Clicking a SKU in Worklists opens Overview and rings its cell.
 - The last screen per dashboard is kept on the device (`jsw:dashScreen`, `{ board, screens }`). An old

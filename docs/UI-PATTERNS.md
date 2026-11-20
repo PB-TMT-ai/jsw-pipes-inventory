@@ -1041,6 +1041,10 @@ longer tabs. Where a bullet below still says "tab", read the screen named here; 
     through `fmMmSmStatusLines`); the grid tags the cell's SKUs plus any other SKU on a kept cell (`fmMmSmStatusTagRows`, so a shared
     cell still reads "2 SKUs"). A chip at the top of the block (*Clear the South status filter*) or a second click clears it. The pick
     is per region and **holds on every screen until cleared** (it used to drop when the tab changed). Empty cells are disabled.
+- **All regions (owner, 20-Nov-2026).** The switch reads **South | West | All**; South stays the default. **All** shows every region, one
+  under the other, each with its own figures line (`FmMmSmRegionFigures`, testid `fm-mm-sm-region-line-South`), its own Status key, grid,
+  lists and chip — the same blocks, unhidden. **Nothing is added across regions**: a SKU's tag is regional (ADR-0006), so there is no
+  All key, no All grid and no All total. A Status key pick under All narrows its own region and keeps All on.
 - **One region at a time (#389, owner 19-Nov-2026).** A **South | West** switch (`Segmented`, named *Region*, South first and shown) on
   one line with the region's plants (`stock at Hyderabad + Lepakshi`), *South-wide, as of today*, and the figures the three cards
   used to show: **SKUs** (FM, MM, SM, No sales), **Blended monthly rate** (T a month), **Current inventory** (T) —

@@ -54,7 +54,7 @@ test('admin: FM / MM / SM is its own dashboard, opening on Overview with the Sta
   await expect(screens(page).getByRole('tab')).toHaveText(['Overview', 'Worklists', 'Production check', 'SKU list'])
   await expect(screens(page).getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true')
   // One region block at a time (#389): a South | West switch, South first and shown; West is behind the switch
-  await expect(page.getByRole('group', { name: 'Region', exact: true }).getByRole('button')).toHaveText(['South', 'West'])
+  await expect(page.getByRole('group', { name: 'Region', exact: true }).getByRole('button')).toHaveText(['South', 'West', 'All'])
   await expect(page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: 'South', exact: true })).toHaveAttribute('aria-pressed', 'true')
   expect(await page.getByRole('region', { name: / block$/ }).evaluateAll(els => els.map(e => e.getAttribute('aria-label')))).toEqual(['South block'])
   await expect(page.getByTestId('fm-mm-sm-cards')).toHaveCount(0)   // the three cards are gone: their figures sit on the region line
@@ -390,3 +390,28 @@ test('the FM / MM / SM grids print 11 px with 10 px heads; the Sales screen’s 
   await openDashboard(page, 'Sales', 'Size × Thickness')
   expect(await sizes(page.getByRole('table', { name: 'Sales by size and thickness' }))).toEqual(['12px', '12px'])
 })
+
+// ── All (owner, 20-Nov-2026): every region, one under the other — each its own figures, Status key and grid, never added up ──
+test('All shows South then West, each with its own figures, Status key and grid; a pick stays in its region', async ({ page }) => {
+  await signIn(page, 'admin', { rows })
+  await openSubTab(page)
+  const figs = (text) => [text.match(/SKUs\s*(\d+)/)[1], text.match(/\(FM[^)]*\)/)[0], text.match(/Blended monthly rate\s*([\d.,]+)/)[1], text.match(/Current inventory\s*([\d.,]+)/)[1]]
+  const single = { South: figs(await regionLine(page, 'South')), West: figs(await regionLine(page, 'West')) }
+  await showRegion(page, 'All')
+  await expect(page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: 'All', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  // both blocks, South first; each region's own Status key; no added-up key
+  expect(await page.getByRole('region', { name: / block$/ }).evaluateAll(els => els.map(e => e.getAttribute('aria-label')))).toEqual(['South block', 'West block'])
+  for (const r of ['South', 'West']) await expect(statusKey(page, r)).toBeVisible()
+  await expect(page.getByRole('table', { name: /^Status key · All/ })).toHaveCount(0)
+  // each region's figures are exactly what that region shows alone
+  for (const r of ['South', 'West']) expect(figs(await page.getByTestId(`fm-mm-sm-region-line-${r}`).innerText())).toEqual(single[r])
+  // a South pick narrows South only, and All stays on
+  await (await southFmBox(page)).click()
+  await expect(block(page, 'South').getByRole('button', { name: 'Clear the South status filter' })).toBeVisible()
+  await expect(block(page, 'West').getByRole('button', { name: 'Clear the West status filter' })).toHaveCount(0)
+  await expect(block(page, 'West')).toBeVisible()
+  // Worklists under All: each region's lists, in its own block
+  await goScreen(page, 'Worklists')
+  for (const r of ['South', 'West']) await expect(block(page, r).getByRole('region', { name: `Make next · ${r}` })).toBeVisible()
+})
+

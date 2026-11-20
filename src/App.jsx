@@ -5517,24 +5517,30 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
   // Status key (#379): the cell picked per region ({ South: key | null, West: … }). It narrows that region's grid and
   // lists on every screen until cleared (the chip on the block).
   const [statusPick, setStatusPick] = useState({})
-  // #389: one region block at a time. Both stay mounted (the inactive one is `hidden`) so a region keeps its own filters, dates and chip.
+  // #389: one region block at a time — or All (owner, 20-Nov-2026): every region, one under the other, each its own
+  // Status key, grid and figures. A tag is regional, so the regions are shown apart and never added up.
+  // Every block stays mounted (an unshown one is `hidden`) so a region keeps its own filters, dates and chip.
   const [shown, setShown] = useState('South')
+  const all = shown === FM_MM_SM_ALL_REGIONS
+  const isShown = (region) => all || region === shown
   const pickStatus = (region, key) => {
-    setShown(region)
+    setShown(s => s === FM_MM_SM_ALL_REGIONS ? s : region)
     setStatusPick(p => ({ ...p, [region]: p[region] === key ? null : key }))
   }
-  const shownBlock = feed.find(b => b.region === shown)
   return (
     <div className="space-y-6">
       <FmMmSmRegionLine feed={feed} plants={plants} shown={shown} onShow={setShown} />
-      {showKey && shownBlock && <FmMmSmStatusMatrix block={shownBlock} picked={statusPick[shown] || null} onPick={k => pickStatus(shown, k)} />}
-      {(inner === 'check' || inner === 'list') && <p className="text-sm text-slate-500 dark:text-slate-400">The region shown, as <strong>{inner === 'check' ? 'Production check' : 'SKU list'}</strong> — the same figures as Sales › {inner === 'check' ? 'Production check' : 'SKU list'} with Region on that region. Tag and cover show on Overview.</p>}
-      {(showLists || showGrid) && feed.map(b => (
-        <FmMmSmRegionBlock key={b.region} block={b} hidden={b.region !== shown} orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils}
+      {(inner === 'check' || inner === 'list') && <p className="text-sm text-slate-500 dark:text-slate-400">{all ? 'Each region' : 'The region shown'}, as <strong>{inner === 'check' ? 'Production check' : 'SKU list'}</strong> — the same figures as Sales › {inner === 'check' ? 'Production check' : 'SKU list'} with Region on that region. Tag and cover show on Overview.</p>}
+      {feed.map(b => (
+        <React.Fragment key={b.region}>
+          {all && <FmMmSmRegionFigures block={b} plants={plants} />}
+          {showKey && isShown(b.region) && <FmMmSmStatusMatrix block={b} picked={statusPick[b.region] || null} onPick={k => pickStatus(b.region, k)} />}
+          {(showLists || showGrid) && <FmMmSmRegionBlock block={b} hidden={!isShown(b.region)} orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils}
           skus={skus} plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant} month={todayStr.slice(0, 7)}
           view={gridView} showGrid={showGrid} onFound={() => onNavigate('fm', 'grid')}
           status={statusPick[b.region] || null} onClearStatus={() => pickStatus(b.region, null)}
-          worklists={showLists} />
+          worklists={showLists} />}
+        </React.Fragment>
       ))}
     </div>
   )
@@ -5682,21 +5688,40 @@ function FmMmSmRegionBlock({ block, hidden = false, orders, dispatches, producti
 
 // #389: the region switch and, on one line, what the three cards showed — the region's plants, SKUs (FM, MM, SM, No sales),
 // Blended monthly rate and Current inventory, region-wide and as of today (`fmMmSmFeed`'s `cards`).
+const FM_MM_SM_ALL_REGIONS = 'All'
 function FmMmSmRegionLine({ feed, plants, shown, onShow }) {
-  const b = feed.find(x => x.region === shown) || feed[0]
-  const serving = [...plantsServingRegion(b.region, plantMaster(plants))].map(id => plantLabel(id))
-  const { cards } = b
-  return (
-    <div data-testid="fm-mm-sm-region-line" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-700 dark:text-slate-200">
-      <Segmented label="Region" options={feed.map(x => [x.region, x.region])} value={b.region} onChange={onShow} />
-      <span className="text-xs text-slate-500 dark:text-slate-400">stock at {serving.length ? serving.join(' + ') : `no plant — none serves ${b.region}`}</span>
-      <span className="text-xs text-slate-500 dark:text-slate-400">{b.region}-wide, as of today</span>
-      <span>SKUs <strong className="tabular-nums">{cards.skus}</strong>
-        <span className="text-xs text-slate-500 dark:text-slate-400"> ({['FM', 'MM', 'SM', 'No sales'].map(t => `${t} ${cards.counts[t]}`).join(' · ')})</span></span>
-      <span>Blended monthly rate <strong className="tabular-nums">{fmtTonnes(cards.rate)} T a month</strong></span>
-      <span>Current inventory <strong className="tabular-nums">{fmtTonnes(cards.inventory)} T</strong></span>
+  const options = [...feed.map(x => [x.region, x.region]), [FM_MM_SM_ALL_REGIONS, FM_MM_SM_ALL_REGIONS]]
+  if (shown === FM_MM_SM_ALL_REGIONS) return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-700 dark:text-slate-200">
+      <Segmented label="Region" options={options} value={shown} onChange={onShow} />
+      <span className="text-xs text-slate-500 dark:text-slate-400">Every region, one under the other. A SKU’s tag is regional, so the regions are never added up.</span>
     </div>
   )
+  const b = feed.find(x => x.region === shown) || feed[0]
+  return (
+    <div data-testid="fm-mm-sm-region-line" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-700 dark:text-slate-200">
+      <Segmented label="Region" options={options} value={b.region} onChange={onShow} />
+      <FmMmSmRegionFigures block={b} plants={plants} inline />
+    </div>
+  )
+}
+// One region's figures: its plants and what the three cards showed (`fmMmSmFeed`'s `cards`), region-wide, as of today.
+// `inline`: on the switch's line (one region shown); otherwise its own line heading that region's section under All.
+function FmMmSmRegionFigures({ block: b, plants, inline = false }) {
+  const serving = [...plantsServingRegion(b.region, plantMaster(plants))].map(id => plantLabel(id))
+  const { cards } = b
+  const body = <>
+    {!inline && <strong className="text-base font-semibold text-slate-900 dark:text-white">{b.region}</strong>}
+    <span className="text-xs text-slate-500 dark:text-slate-400">stock at {serving.length ? serving.join(' + ') : `no plant — none serves ${b.region}`}</span>
+    <span className="text-xs text-slate-500 dark:text-slate-400">{b.region}-wide, as of today</span>
+    <span>SKUs <strong className="tabular-nums">{cards.skus}</strong>
+      <span className="text-xs text-slate-500 dark:text-slate-400"> ({['FM', 'MM', 'SM', 'No sales'].map(t => `${t} ${cards.counts[t]}`).join(' · ')})</span></span>
+    <span>Blended monthly rate <strong className="tabular-nums">{fmtTonnes(cards.rate)} T a month</strong></span>
+    <span>Current inventory <strong className="tabular-nums">{fmtTonnes(cards.inventory)} T</strong></span>
+  </>
+  return inline
+    ? body
+    : <div data-testid={`fm-mm-sm-region-line-${b.region}`} className="flex flex-wrap items-baseline gap-x-4 gap-y-1 pt-4 border-t-2 border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200">{body}</div>
 }
 
 // #390: the long explanation, folded; every rule stays one click away.
