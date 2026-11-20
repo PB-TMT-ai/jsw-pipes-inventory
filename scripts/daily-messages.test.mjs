@@ -242,3 +242,15 @@ describe('the workbook and the daily message cannot drift apart', () => {
     expect(s.plantPipeline.totals.babyLeft).toBeCloseTo(44, 6)
   })
 })
+
+// The fixtures above go in through `--in`, so they never exercise the live fetch. On 20-Nov-2026 the
+// fetch omitted `mm_id` and `invoiced_qty`: every open line lost its size (Servable – Unconfirmed read
+// 0 T against 2,104 T of stock) and Confirmed was over-netted (33.8 T vs the app's 38.7 T).
+describe('scripts/daily-splits.mjs — live order fetch carries every field the builders read', () => {
+  it('ORDER_COLS includes mm_id, description and invoiced_qty', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(resolve(process.cwd(), 'scripts', 'daily-splits.mjs'), 'utf8')
+    const cols = (src.match(/const ORDER_COLS = ([\s\S]*?)\n(?!\s*')/)[1].match(/'([^']*)'/g) || []).join('').replace(/'/g, '').split(',')
+    for (const c of ['mm_id', 'description', 'invoiced_qty', 'line_id', 'confirmed', 'non_confirmed', 'plant']) expect(cols).toContain(c)
+  })
+})
