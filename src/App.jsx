@@ -2301,7 +2301,7 @@ const flatCSV = (filename, cols, rows) => downloadCSV(filename, cols.map(c => c.
 // tabs, a segmented switch, a strip of plain numbers between thin rules, a plain block (no card,
 // no shadow) whose scope is a visible line, status as a word with a red dot on Act only.
 const DASH_RING = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
-// PROTOTYPE (dashboards nav, ?proto=A|B|C): when set, the one Dashboards nav picks each screen and the
+// PROTOTYPE (dashboards nav, ?proto=A1|A2): when set, the one Dashboards nav picks each screen and the
 // dashboards hide their own tab rows. Throwaway — lives only on the prototype branch.
 const ProtoNav = createContext(null)
 function ScreenTabs({ label, tabs, value, onChange }) {
@@ -2746,7 +2746,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     <div className="space-y-4 text-slate-700 dark:text-slate-200">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
+          {!proto && <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>}
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Stock and ageing are <strong>as of {fmtIso(ov.to)}</strong>; movement runs <strong>{fmtIso(ov.from)} → {fmtIso(ov.to)}</strong>.
           </p>
@@ -3798,7 +3798,7 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeL
       </div>
 
       {/* ── The three views ── */}
-      <div role="group" aria-label="Coil Tracker view" hidden={!!protoCoil} className="inline-flex flex-wrap border-[1.5px] border-slate-800 dark:border-slate-400">
+      <div role="group" aria-label="Coil Tracker view" className={`${protoCoil ? 'hidden' : 'inline-flex'} flex-wrap border-[1.5px] border-slate-800 dark:border-slate-400`}>
         {COIL_TRACKER_VIEWS.map(([k, label]) => (
           <button key={k} type="button" onClick={() => setView(k)} aria-pressed={view === k}
             className={`px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset ${view === k
@@ -4798,7 +4798,9 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   const [thks, setThks] = useState([])
   const [plantNames, setPlantNames] = useState([])
   const [show, setShow] = useState(tagRows ? FM_MM_SM_CHIP.key : 'all')
-  const [view, setView] = useState('grid')
+  const [view0, setView] = useState('grid')
+  const protoGrid = useContext(ProtoNav)?.grid // PROTOTYPE: the three views are sub-tabs now
+  const view = protoGrid || view0
   // On the sub-tab (#391) the sub-tab's own chips are in front and the Dashboard's (every other chip) sit under More.
   const showList = tagRows ? [FM_MM_SM_CHIP, ...(byTag ? [FM_MM_SM_ALL_CHIP] : []), FM_MM_SM_RAW_CHIP, ...SALES_GRID_SHOW.filter(s => s.key !== 'raw')] : SALES_GRID_SHOW
   const moreChips = tagRows ? SALES_GRID_SHOW.filter(s => s.key !== 'raw') : []
@@ -5126,7 +5128,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
               className={`px-2.5 py-1 rounded-md text-xs font-medium ${show === s.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{s.label}</button>
           </React.Fragment>
         ))}
-        <span className="ml-auto flex gap-1.5">
+        <span className={protoGrid ? 'hidden' : 'ml-auto flex gap-1.5'}>
           {[['grid', 'Size × Thickness'], ['check', 'Production check'], ['list', 'SKU list']].map(([k, label]) => (
             <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)}
               className={`px-2.5 py-1 rounded-md text-xs font-medium ${view === k ? 'bg-slate-700 text-white dark:bg-slate-200 dark:text-slate-900' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{label}</button>
@@ -6010,7 +6012,13 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
     <div className="space-y-6">
       {showFmMmSm && !ps && <ScreenTabs label="Sales view" tabs={SALES_VIEWS} value={salesView} onChange={setSalesView} />}
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
+        {ps ? (ps !== 'monthwise' && (
+          <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">Month
+            <select value={month} onChange={e => setMonth(e.target.value)} className={inputCls} title="Scopes Invoiced MTD, Total Orders and the size grid's starting dates">
+              {monthOptions.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
+            </select>
+          </label>)) || <span />
+          : <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>}
         <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
           ['Distributor', 'State', 'All States', 'Region', 'Best Estimate (T)', '% of BE', 'Gap to BE (T)', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'Invoiced MTD (T)', 'Total Orders (T)'],
           // "All States" is only populated for a multi-state distributor — it is what makes the
@@ -6050,9 +6058,9 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
             <option value="">All Distributors</option>
             {distOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
           </select>
-          <select value={month} onChange={e => setMonth(e.target.value)} className={inputCls} title="Scopes the Invoiced MTD / Total Orders figures">
+          {!ps && <select value={month} onChange={e => setMonth(e.target.value)} className={inputCls} title="Scopes the Invoiced MTD / Total Orders figures">
             {monthOptions.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
-          </select>
+          </select>}
         </div>
       }>
         {rows.length ? (
@@ -8193,20 +8201,21 @@ function ProductionPlanningTab(props) {
   )
 }
 
-// ── PROTOTYPE — one Dashboards tab, two layers only (dashboard → screen). Throwaway; lives on the
-// prototype branch, never merged. Three nav layouts on the same content, switched by ?proto=A|B|C
-// and the floating bar (or ← →). The screens are the real ones, driven through ProtoNav. ──
-const PROTO_GROUPS = [
-  { key: 'inventory', label: 'Inventory', blurb: 'Stock by plant, stock movement, plant-wise tracker, activity and alerts.',
-    subs: [['overview', 'Overview'], ['movement', 'Stock movement'], ['tracker', 'Plant-wise Tracker'], ['sales', 'Activity']] },
-  { key: 'drill', label: 'Plant drill', blurb: 'One plant in depth: coil & FG grid, old coil, slit waiting, FG age, FG days of cover.',
-    subs: DRILL_TABS.map(t => [t.key, t.label]) },
-  { key: 'coil', label: 'Coil Tracker', blurb: 'Raw-material coil register: stock now, movement by month, coil ledger.', subs: COIL_TRACKER_VIEWS },
-  { key: 'sales', label: 'Sales', blurb: 'Order book and invoicing by distributor, size and month; dispatch by plant.',
-    subs: [['month', 'This month'], ['dist', 'Distributor'], ['size', 'Size grid'], ['monthwise', 'Month-wise'], ['dispatch', 'Dispatch']] },
-  { key: 'fm', label: FM_MM_SM_NAME, blurb: 'Fast / medium / slow movers: status key, make next, stock stuck.', subs: FM_MM_SM_TABS, admin: true },
+// ── PROTOTYPE — one Dashboards tab, two layers only (dashboard → screen), layout A (chosen 20-Nov:
+// two tab rows). Throwaway; lives on the prototype branch, never merged. The open question now is
+// where the size grid's three views go: ?proto=A1 puts them inside Sales, ?proto=A2 makes them a
+// dashboard of their own. Layouts B and C are in commit 938320e. ──
+const PROTO_SIZE_VIEWS = [['grid', 'Size × Thickness'], ['check', 'Production check'], ['list', 'SKU list']]
+const protoGroups = (v) => [
+  { key: 'inventory', label: 'Inventory', subs: [['overview', 'Overview'], ['movement', 'Stock movement'], ['tracker', 'Plant-wise Tracker'], ['sales', 'Activity']] },
+  { key: 'drill', label: 'Plant drill', subs: DRILL_TABS.map(t => [t.key, t.label]) },
+  { key: 'coil', label: 'Coil Tracker', subs: COIL_TRACKER_VIEWS },
+  { key: 'sales', label: 'Sales', subs: [['month', 'This month'], ['dist', 'Distributor'],
+    ...(v === 'A1' ? PROTO_SIZE_VIEWS.map(([k, n]) => [`size-${k}`, n]) : []), ['monthwise', 'Month-wise'], ['dispatch', 'Dispatch']] },
+  ...(v === 'A2' ? [{ key: 'size', label: 'Size grid', subs: PROTO_SIZE_VIEWS }] : []),
+  { key: 'fm', label: FM_MM_SM_NAME, subs: FM_MM_SM_TABS, admin: true },
 ]
-const PROTO_VARIANTS = [['A', 'Two tab rows'], ['B', 'Sidebar'], ['C', 'Hub + breadcrumb']]
+const PROTO_VARIANTS = [['A1', 'Size views inside Sales'], ['A2', 'Size grid as its own dashboard']]
 
 function ProtoSwitcher({ variant, setVariant }) {
   const i = Math.max(0, PROTO_VARIANTS.findIndex(([k]) => k === variant))
@@ -8227,115 +8236,54 @@ function ProtoSwitcher({ variant, setVariant }) {
   const btn = 'w-8 h-8 rounded-full hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white'
   return (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-full bg-fuchsia-700 text-white shadow-2xl ring-2 ring-white px-2 py-1 text-sm">
-      <button type="button" aria-label="Previous layout" onClick={() => step(-1)} className={btn}>←</button>
+      <button type="button" aria-label="Previous variant" onClick={() => step(-1)} className={btn}>←</button>
       <span className="font-semibold whitespace-nowrap">Prototype {PROTO_VARIANTS[i][0]} — {PROTO_VARIANTS[i][1]}</span>
-      <button type="button" aria-label="Next layout" onClick={() => step(1)} className={btn}>→</button>
+      <button type="button" aria-label="Next variant" onClick={() => step(1)} className={btn}>→</button>
     </div>
   )
 }
 
 function ProtoDashboards({ variant, setVariant, showFm, dashboard, coilTracker, sales, dispatch }) {
-  const v = PROTO_VARIANTS.some(([k]) => k === variant) ? variant : 'A'
-  const groups = PROTO_GROUPS.filter(g => !g.admin || showFm)
-  const [group, setGroup] = useState('inventory')
-  const [subs, setSubs] = useState(() => Object.fromEntries(PROTO_GROUPS.map(g => [g.key, g.subs[0][0]])))
-  const [hub, setHub] = useState(true) // layout C opens on the hub
-  useEffect(() => { if (v === 'C') setHub(true) }, [v])
-  const g = PROTO_GROUPS.find(x => x.key === group)
-  const sub = subs[group]
-  const go = (k, s) => { setGroup(k); if (s) setSubs(m => ({ ...m, [k]: s })); setHub(false) }
+  const v = PROTO_VARIANTS.some(([k]) => k === variant) ? variant : 'A1'
+  const groups = protoGroups(v).filter(g => !g.admin || showFm)
+  const [group0, setGroup] = useState('inventory')
+  const [subs, setSubs] = useState({})
+  // A size view picked in one variant lands on the same view in the other.
+  const group = groups.some(g => g.key === group0) ? group0 : group0 === 'size' ? 'sales' : 'inventory'
+  const g = groups.find(x => x.key === group)
+  const sub = g.subs.some(([k]) => k === subs[group]) ? subs[group] : g.subs[0][0]
+  const go = (k, s) => { setGroup(k); if (s) setSubs(m => ({ ...m, [k]: s })) }
+  const sizeView = group === 'size' ? sub : group === 'sales' && sub.startsWith('size-') ? sub.slice(5) : null
   const nav = {
     dash: group === 'inventory' ? sub : group === 'drill' ? 'drill' : null,
     drill: group === 'drill' ? sub : null,
     coil: group === 'coil' ? sub : null,
-    sales: group === 'sales' ? sub : group === 'fm' ? 'fm' : null,
+    sales: sizeView ? 'size' : group === 'sales' ? sub : group === 'fm' ? 'fm' : null,
+    // FM/MM/SM's own grid has no room for a third layer, so it stays on Size × Thickness.
+    grid: sizeView || (group === 'fm' ? 'grid' : null),
     fm: group === 'fm' ? sub : null,
     // Clicking a plant on Overview still lands on Plant drill — now a dashboard of its own.
     open: (k, t) => k === 'drill' ? go('drill', t) : go('inventory', k),
   }
-  const content = (
-    <ProtoNav.Provider value={nav}>
-      {group === 'inventory' || group === 'drill' ? dashboard : group === 'coil' ? coilTracker
-        : group === 'sales' && sub === 'dispatch' ? dispatch : sales}
-    </ProtoNav.Provider>
+  return (
+    <div className="space-y-4">
+      <div role="tablist" aria-label="Dashboards" className="flex flex-wrap gap-x-1 border-b-2 border-slate-200 dark:border-slate-700">
+        {groups.map(x => (
+          <button key={x.key} type="button" role="tab" aria-selected={x.key === group} onClick={() => go(x.key)}
+            className={`px-4 py-2 -mb-0.5 border-b-2 text-base ${DASH_RING} ${x.key === group
+              ? 'border-indigo-600 text-indigo-700 dark:text-indigo-300 font-semibold'
+              : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>{x.label}</button>
+        ))}
+      </div>
+      <Segmented role="tablist" label={`${g.label} screens`} options={g.subs} value={sub} onChange={s => go(group, s)} />
+      <ProtoNav.Provider value={nav}>
+        {group === 'inventory' || group === 'drill' ? dashboard : group === 'coil' ? coilTracker
+          : group === 'sales' && sub === 'dispatch' ? dispatch : sales}
+      </ProtoNav.Provider>
+      <div className="h-16" aria-hidden="true" />
+      <ProtoSwitcher variant={v} setVariant={setVariant} />
+    </div>
   )
-
-  let body
-  if (v === 'A') {
-    body = (
-      <div className="space-y-4">
-        <div role="tablist" aria-label="Dashboards" className="flex flex-wrap gap-x-1 border-b-2 border-slate-200 dark:border-slate-700">
-          {groups.map(x => (
-            <button key={x.key} type="button" role="tab" aria-selected={x.key === group} onClick={() => go(x.key)}
-              className={`px-4 py-2 -mb-0.5 border-b-2 text-base ${DASH_RING} ${x.key === group
-                ? 'border-indigo-600 text-indigo-700 dark:text-indigo-300 font-semibold'
-                : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>{x.label}</button>
-          ))}
-        </div>
-        <Segmented role="tablist" label={`${g.label} screens`} options={g.subs} value={sub} onChange={s => go(group, s)} />
-        {content}
-      </div>
-    )
-  } else if (v === 'B') {
-    body = (
-      <div className="flex flex-col lg:flex-row gap-6">
-        <nav aria-label="Dashboards" className="lg:w-52 shrink-0 lg:sticky lg:top-4 self-start w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-2">
-          {groups.map(x => (
-            <div key={x.key} className="mb-3 last:mb-0">
-              <div className="px-2 pt-1 pb-1 text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{x.label}</div>
-              {x.subs.map(([k, n]) => {
-                const on = x.key === group && k === sub
-                return (
-                  <button key={k} type="button" aria-current={on ? 'page' : undefined} onClick={() => go(x.key, k)}
-                    className={`block w-full text-left px-2 py-1.5 rounded text-sm border-l-2 ${DASH_RING} ${on
-                      ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-200 font-semibold'
-                      : 'border-transparent text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}`}>{n}</button>
-                )
-              })}
-            </div>
-          ))}
-        </nav>
-        <div className="flex-1 min-w-0">{content}</div>
-      </div>
-    )
-  } else {
-    body = hub ? (
-      <div className="space-y-4">
-        <div>
-          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboards</h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400">Pick a dashboard, or jump straight to one of its screens.</p>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          {groups.map(x => (
-            <div key={x.key} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
-              <button type="button" onClick={() => go(x.key)} className={`text-lg font-semibold text-indigo-700 dark:text-indigo-300 hover:underline rounded ${DASH_RING}`}>{x.label} →</button>
-              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{x.blurb}</p>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {x.subs.map(([k, n]) => (
-                  <button key={k} type="button" onClick={() => go(x.key, k)}
-                    className={`text-xs px-2.5 py-1 rounded-full border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-slate-700 ${DASH_RING}`}>{n}</button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    ) : (
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <button type="button" onClick={() => setHub(true)} className={`text-indigo-700 dark:text-indigo-300 hover:underline rounded ${DASH_RING}`}>Dashboards</button>
-          <span className="text-slate-400" aria-hidden="true">›</span>
-          <select aria-label="Dashboard" value={group} onChange={e => go(e.target.value)}
-            className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 dark:text-slate-100 font-semibold">
-            {groups.map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
-          </select>
-        </div>
-        <ScreenTabs label={`${g.label} screens`} tabs={g.subs} value={sub} onChange={s => go(group, s)} />
-        {content}
-      </div>
-    )
-  }
-  return <>{body}<div className="h-16" aria-hidden="true" /><ProtoSwitcher variant={v} setVariant={setVariant} /></>
 }
 
 function InventoryApp({ session, onLogout }) {
@@ -8348,7 +8296,7 @@ function InventoryApp({ session, onLogout }) {
   const isReadOnly = useCallback((key) => access.readOnly.includes(key), [access])
 
   const [tab, setTab] = useState(access.tabs[0]?.key || 'dashboard')
-  // PROTOTYPE (?proto=A|B|C): one Dashboards tab holds Dashboard, Coil Tracker and Sales.
+  // PROTOTYPE (?proto=A1|A2): one Dashboards tab holds Dashboard, Coil Tracker and Sales.
   const [protoVariant, setProtoVariant] = useState(() => new URLSearchParams(window.location.search).get('proto'))
   // ── Plant selector (tickets #121, #126) — one control in the header, applied globally. An admin
   // gets it and starts on All Plants, so every figure reads exactly as it did before #121;
@@ -8491,7 +8439,7 @@ function InventoryApp({ session, onLogout }) {
     </div>
   )
 
-  // PROTOTYPE (?proto=A|B|C): one Dashboards tab holds Dashboard, Coil Tracker and Sales.
+  // PROTOTYPE (?proto=A1|A2): one Dashboards tab holds Dashboard, Coil Tracker and Sales.
   const navTabs = protoVariant ? access.tabs.filter(t => t.key !== 'coilTracker' && t.key !== 'sales')
     .map(t => t.key === 'dashboard' ? { ...t, label: 'Dashboards' } : t) : access.tabs
   const dashboardEl = <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
