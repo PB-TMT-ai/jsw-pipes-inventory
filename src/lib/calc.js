@@ -3542,8 +3542,10 @@ export const ROLE_PLANT = 'plant'
 // decides which of these render, and a second list in the component is a list that drifts: a tab
 // added there and not here would be shown to everyone by a rule that had never heard of it.
 export const APP_TABS = [
-  { key: 'dashboard', label: 'Dashboard' },
-  { key: 'coilTracker', label: 'Coil Tracker' },
+  // One tab for every dashboard (ADR-0018): Inventory, Plant drill, Coil Tracker, Sales and FM / MM / SM
+  // are its first-level tabs, so Coil Tracker and Sales are no longer tabs here. The KEY stays
+  // `dashboard` — it is what every role is granted.
+  { key: 'dashboard', label: 'Dashboards' },
   { key: 'coilInward', label: '1. Coil Inward' },
   { key: 'slitting', label: '2. Slitting' },
   { key: 'production', label: '3. Production' },
@@ -3553,7 +3555,6 @@ export const APP_TABS = [
   // PLANT_READ_ONLY_TABS names, so renaming it would silently move a permission.
   { key: 'skuMaster', label: 'Masters' },
   { key: 'orders', label: 'Orders & Invoice' },
-  { key: 'sales', label: 'Sales' },
   // Admin-only (#275): the planning master, and later the monthly and weekly campaigns (#248).
   { key: 'productionPlanning', label: 'Production Planning' },
   { key: 'reports', label: 'Reports' },
@@ -3599,8 +3600,8 @@ const NO_ACCESS = { tabs: [], readOnly: [], plantSelector: false, plant: '', fmM
 //   plantSelector whether the header offers the plant selector
 //   plant          the plant every scoped view is filtered to — ALL_PLANTS for an admin (who then
 //                  moves it with the selector), the user's own plant for a plant user (who cannot)
-//   fmMmSmSubTab   whether the Sales tab offers its FM / MM / SM sub-tab (#384) — admin only. A screen
-//                  gate inside a tab both roles see, so it is a field here, never a `session.role` check
+//   fmMmSmSubTab   whether Dashboards offers its FM / MM / SM dashboard (#384, ADR-0018) — admin only. A
+//                  screen gate inside a tab both roles see, so it is a field here, never a `session.role` check
 //
 // An admin's `plant` is where the selector STARTS; a plant user's is where it is pinned. That is
 // the whole difference, and it is why `plantSelector` and `plant` come out of the same function:

@@ -1,13 +1,12 @@
 import { test, expect } from '@playwright/test'
-import { signIn } from './signin.js'
+import { signIn, openDashboard } from './signin.js'
 
-// ── Sales tab, FM / MM / SM sub-tab (#384): gate, strip, inner tabs, South and West blocks ─────────
+// ── Dashboards › FM / MM / SM (#384; ADR-0018): gate, screens, South and West blocks ─────────────────
 // The tag, cover and cards are calc's (`fmMmSmFeed`, `fmMmSmCellLabel`, unit-tested in
-// src/lib/fm-mm-sm-subtab.test.js). What only a browser answers is the wiring: who sees the strip, that
-// the sub-tab is fed the WHOLE stores (the header plant selector moves no tag or card), that each block
+// src/lib/fm-mm-sm-subtab.test.js). What only a browser answers is the wiring: who gets the dashboard, that
+// it is fed the WHOLE stores (the header plant selector moves no tag or card), that each block
 // reads only its own region's plants, and that its Production check and SKU list are the Dashboard's
 // with the Region filter on that region. Rows are invented; SHS 50x50 1.6 is on both regions' seed master.
-const tab = (page, name) => page.getByRole('button', { name, exact: true })
 const SHS_50x50_16 = '1139-13064-10059417'    // DEFAULT_SKUS: MS SHS … 50x50x1.60x6000
 const now = new Date()
 const monthDay = (back, day) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, day)).toISOString().slice(0, 10)
@@ -27,61 +26,63 @@ const rows = {
   orders: [order(1, 'hyderabad', 'D-S1', 'SOUTH ONE', 'TELANGANA', 5), order(2, 'npmd', 'D-W1', 'WEST ONE', 'MAHARASHTRA', 3)],
 }
 
-const strip = (page) => page.getByRole('group', { name: 'Sales view' })
+// Dashboards › <board> › <screen> (ADR-0018): the dashboard row, then that dashboard's screens.
+const dashRow = (page) => page.getByRole('group', { name: 'Dashboard', exact: true })
+const screens = (page) => page.getByRole('tablist', { name: 'FM / MM / SM screens' })
+const goScreen = (page, name) => screens(page).getByRole('tab', { name, exact: true }).click()
 const block = (page, region) => page.getByRole('region', { name: `${region} block` })
 // #389: one region block is shown at a time; a spec that reads the other region switches to it first.
 const showRegion = (page, region) => page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: region, exact: true }).click()
 // #391: the Dashboard's chips sit under a More dropdown in each block.
 const pickMore = async (b, name) => { await b.getByRole('button', { name: /^More/ }).click(); await b.getByRole('button', { name, exact: true }).click() }
 const regionLine = async (page, region) => { await showRegion(page, region); return page.getByTestId('fm-mm-sm-region-line').innerText() }
-const openSubTab = async (page) => {
-  await tab(page, 'Sales').click()
-  await strip(page).getByRole('button', { name: 'FM / MM / SM', exact: true }).click()
+const openSubTab = async (page, screen = 'Overview') => {
+  await openDashboard(page, 'FM / MM / SM', screen)
   await expect(block(page, 'South')).toBeVisible()
 }
 const cellsOf = (table, size) => table.locator('tbody tr', { hasText: size }).first().locator('td').allInnerTexts()
 
-test('admin: the strip shows, Sales Dashboard is the default, FM / MM / SM opens on Status key', async ({ page }) => {
+test('admin: FM / MM / SM is its own dashboard, opening on Overview with the Status key', async ({ page }) => {
   await signIn(page, 'admin', { rows })
-  await tab(page, 'Sales').click()
-  await expect(strip(page).getByRole('button', { name: 'Sales Dashboard', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await expect(page.getByRole('heading', { name: 'Sales Dashboard' })).toBeVisible()
+  // Sales is a dashboard of its own, opening on This month; its grid is a screen
+  await openDashboard(page, 'Sales')
+  await expect(page.getByRole('tablist', { name: 'Sales screens' }).getByRole('tab', { name: 'This month', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await openDashboard(page, 'Sales', 'Size × Thickness')
   await expect(page.getByRole('table', { name: 'Sales by size and thickness' })).toBeVisible()
 
-  await strip(page).getByRole('button', { name: 'FM / MM / SM', exact: true }).click()
-  const inner = page.getByRole('group', { name: 'FM / MM / SM tabs' })
-  await expect(inner.getByRole('button')).toHaveText(['Status key', 'Make next · Stock stuck', 'By FM / MM / SM'])
-  await expect(inner.getByRole('button', { name: 'Status key', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await dashRow(page).getByRole('button', { name: 'FM / MM / SM', exact: true }).click()
+  await expect(screens(page).getByRole('tab')).toHaveText(['Overview', 'Worklists', 'Production check', 'SKU list'])
+  await expect(screens(page).getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true')
   // One region block at a time (#389): a South | West switch, South first and shown; West is behind the switch
-  await expect(page.getByRole('group', { name: 'Region', exact: true }).getByRole('button')).toHaveText(['South', 'West'])
+  await expect(page.getByRole('group', { name: 'Region', exact: true }).getByRole('button')).toHaveText(['South', 'West', 'All'])
   await expect(page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: 'South', exact: true })).toHaveAttribute('aria-pressed', 'true')
   expect(await page.getByRole('region', { name: / block$/ }).evaluateAll(els => els.map(e => e.getAttribute('aria-label')))).toEqual(['South block'])
   await expect(page.getByTestId('fm-mm-sm-cards')).toHaveCount(0)   // the three cards are gone: their figures sit on the region line
-  await expect(page.getByRole('heading', { name: 'South', exact: true })).toHaveCount(0)
-  // No Export, no CSV anywhere on the sub-tab; the Dashboard's heading is gone
+  // The grid's title reads the region alone — it no longer repeats the screen name (ADR-0018)
+  await expect(page.getByRole('heading', { name: 'South', exact: true })).toHaveCount(1)
+  // No Export, no CSV anywhere on this dashboard
   await expect(page.getByRole('button', { name: /CSV|Export/ })).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: 'Sales Dashboard' })).toHaveCount(0)
-  // No Region filter on the sub-tab; Plant, Section, Size, Thickness stay
+  // No Region filter in the block; Plant, Section, Size, Thickness stay
   await expect(block(page, 'South').getByRole('button', { name: /^Region:/ })).toHaveCount(0)
   for (const f of ['Plant', 'Section', 'Size', 'Thickness']) await expect(block(page, 'South').getByRole('button', { name: `${f}: All` })).toBeVisible()
-  // The default Show chip is FM / MM / SM view; Status key (#379) opens on its key
+  // The default Show chip is FM / MM / SM view; Overview (#379) opens with the region's Status key on top
   await expect(block(page, 'South').getByRole('button', { name: 'FM / MM / SM view', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await expect(page.getByRole('table', { name: 'Status key', exact: true })).toBeVisible()
-  await inner.getByRole('button', { name: 'Make next · Stock stuck', exact: true }).click()
-  await expect(page.getByText(/built in a later ticket/)).toHaveCount(0) // all three tabs are built (#379, #380, #381)
-  await expect(page.getByRole('table', { name: 'Status key', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('table', { name: 'Status key · South', exact: true })).toBeVisible()
+  await goScreen(page, 'Worklists')
+  await expect(page.getByText(/built in a later ticket/)).toHaveCount(0)
+  await expect(page.getByRole('table', { name: 'Status key · South', exact: true })).toHaveCount(0)
 
-  // Back to the Dashboard: it is all there again
-  await strip(page).getByRole('button', { name: 'Sales Dashboard', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Sales Dashboard' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '⬇ CSV' }).first()).toBeVisible()
+  // Back on Sales: its grid and its Export menu are all there again
+  await openDashboard(page, 'Sales', 'Size × Thickness')
+  await expect(page.getByRole('table', { name: 'Sales by size and thickness' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Export ▾' })).toBeVisible()
 })
 
-test('a plant login sees no strip — the Sales tab is the Dashboard alone', async ({ page }) => {
+test('a plant login gets no FM / MM / SM dashboard — Sales is there alone', async ({ page }) => {
   await signIn(page, 'hyderabad', { rows })
-  await tab(page, 'Sales').click()
-  await expect(page.getByRole('heading', { name: 'Sales Dashboard' })).toBeVisible()
-  await expect(strip(page)).toHaveCount(0)
+  await openDashboard(page, 'Sales', 'Size × Thickness')
+  await expect(page.getByRole('table', { name: 'Sales by size and thickness' })).toBeVisible()
+  await expect(dashRow(page).getByRole('button', { name: 'FM / MM / SM', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'FM / MM / SM', exact: true })).toHaveCount(0)
 })
 
@@ -125,45 +126,53 @@ test('the header plant selector moves no tag, rate or SKU count in either block'
   await expect(block(page, 'South').getByRole('listitem').filter({ hasText: /^SHS 50x50 · 1\.6 mm/ })).toContainText(`FM · ${days} d`)
 })
 
-test('each block’s Production check and SKU list equal the Dashboard’s with the Region filter on that region', async ({ page }) => {
+test('each block’s Production check and SKU list equal the Sales screens’ with the Region filter on that region', async ({ page }) => {
   await signIn(page, 'admin', { rows })
-  await tab(page, 'Sales').click()
-  const dash = {}
-  for (const region of ['South', 'West']) {
+  // Region is set on each Sales screen, so the reading never depends on a filter carried between screens
+  const setRegion = async (region) => {
     await page.getByRole('button', { name: /^Region:/ }).click()
     for (const r of ['South', 'West']) {
-      const box = page.getByLabel(r, { exact: true })
+      // a checkbox, not the grid's own section — its title reads the region alone once one is picked
+      const box = page.getByRole('checkbox', { name: r, exact: true })
       if (await box.isChecked() !== (r === region)) await box.click()
     }
     await page.keyboard.press('Escape')
-    await page.getByRole('button', { name: 'Production check', exact: true }).click()
+  }
+  const dash = {}
+  for (const region of ['South', 'West']) {
+    await openDashboard(page, 'Sales', 'Production check')
+    await setRegion(region)
     const check = await page.getByRole('table', { name: 'Production check by size and thickness' }).innerText()
-    await page.getByRole('button', { name: 'SKU list', exact: true }).click()
+    await openDashboard(page, 'Sales', 'SKU list')
+    await setRegion(region)
     const list = await page.getByRole('table', { name: 'Sales by SKU' }).innerText()
-    await page.getByRole('button', { name: 'Size × Thickness', exact: true }).click()
     dash[region] = { check, list }
   }
-  await strip(page).getByRole('button', { name: 'FM / MM / SM', exact: true }).click()
+  await openDashboard(page, 'FM / MM / SM', 'Production check')
   for (const region of ['South', 'West']) {
     await showRegion(page, region)
     const b = block(page, region)
-    await b.getByRole('button', { name: 'Production check', exact: true }).click()
     expect(await b.getByRole('table', { name: `Production check by size and thickness · ${region}` }).innerText()).toBe(dash[region].check)
-    // The SKU list's columns follow the Show chip: set the Dashboard's default, All
-    await b.getByRole('button', { name: 'SKU list', exact: true }).click()
+  }
+  await goScreen(page, 'SKU list')
+  for (const region of ['South', 'West']) {
+    await showRegion(page, region)
+    const b = block(page, region)
+    // The SKU list's columns follow the Show chip: set the Sales screen's default, All
     await pickMore(b, 'All')
     expect(await b.getByRole('table', { name: `Sales by SKU · ${region}` }).innerText()).toBe(dash[region].list)
   }
 })
 
-test('each block ends with the FG age grid, the Not tagged row and the SKUs not shown in the grid', async ({ page }) => {
+test('each block ends with the Not tagged row and the SKUs not shown in the grid; FG age is not in the block', async ({ page }) => {
   await signIn(page, 'admin', { rows })
   await openSubTab(page)
   for (const region of ['South', 'West']) {
     await showRegion(page, region)
     const b = block(page, region)
-    await b.getByText(/^FG age · as of/).click()   // folded on this tab (#392): open it first
-    await expect(b.getByRole('table', { name: `FG age by size and thickness · ${region}` })).toBeVisible()
+    // FG age is drawn once, under Sales › Size × Thickness (ADR-0018)
+    await expect(b.getByRole('table', { name: `FG age by size and thickness · ${region}` })).toHaveCount(0)
+    await expect(b.getByText(/^FG age · as of/)).toHaveCount(0)
     const check = b.getByRole('table', { name: `Tagged and not tagged · ${region}` })
     await expect(check.locator('tbody tr')).toHaveCount(3)
     const [tagged, untagged, total] = await Promise.all([0, 1, 2].map(i => check.locator('tbody tr').nth(i).locator('td').allInnerTexts()))
@@ -203,50 +212,54 @@ test('at 1366 × 768 every tagged cell prints its number and its tag', async ({ 
   await page.screenshot({ path: 'test-results/fm-mm-sm-1366.png', fullPage: false })
 })
 
-// ── Status key tab (#379). The boxes' counts and tonnes are calc's (`fmMmSmStatusBoxes`, unit-tested in
-// src/lib/fm-mm-sm-status-key.test.js); here: South and West read apart, the header plant moves no box, and a
-// box narrows its own region's grid only, with a chip that clears it. On the seed master each region sells
-// one SKU, SHS 50x50 1.6 — an FM — and holds no other stock, so every other SKU sits in No sales.
-const statusKey = (page) => page.getByRole('table', { name: 'Status key', exact: true })
-const southFmBox = async (page) => {
-  // the one South FM bracket box holding a SKU (its bracket depends on the days of cover, so look it up)
-  const boxes = statusKey(page).getByRole('button', { name: /^South · .+ · FM$/ })
+// ── Status key (#379), now one matrix per region on top of Overview (ADR-0018). The boxes' counts and tonnes are
+// calc's (`fmMmSmStatusBoxes`, unit-tested in src/lib/fm-mm-sm-status-key.test.js); here: South and West read
+// apart, the header plant moves no box, and a box narrows its own region's grid only, with a chip that clears it.
+// On the seed master each region sells one SKU, SHS 50x50 1.6 — an FM — and holds no other stock, so every
+// other SKU sits in No sales. A cell prints "SKUs · Current inventory".
+const statusKey = (page, region = 'South') => page.getByRole('table', { name: `Status key · ${region}`, exact: true })
+const fmBox = async (page, region = 'South') => {
+  // the one FM bracket box holding a SKU (its bracket depends on the days of cover, so look it up)
+  const boxes = statusKey(page, region).getByRole('button', { name: new RegExp(`^${region} · .+ · FM$`) })
   for (const b of await boxes.all()) if (await b.isEnabled()) return b
-  throw new Error('no South FM box with a SKU')
+  throw new Error(`no ${region} FM box with a SKU`)
 }
+const southFmBox = (page) => fmBox(page, 'South')
 
-test('Status key: one key, South and West columns, every box region-wide and unmoved by the header plant', async ({ page }) => {
+test('Status key: one matrix per region, every box region-wide and unmoved by the header plant', async ({ page }) => {
   await signIn(page, 'admin', { rows })
   await openSubTab(page)
-  const key = statusKey(page)
-  await expect(key.locator('thead th')).toHaveText(['Status', 'FG days of cover', 'South', 'West'])
-  // The day limits are CONTEXT.md's (Cover bracket)
-  await expect(key.locator('tbody tr', { hasText: 'Running out' }).first()).toContainText('under 7 d')
-  await expect(key.locator('tbody tr', { hasText: 'Too much' }).last()).toContainText('over 180 d')
-  // FM group: one SKU each side; the box it sits in reads 1 SKU
-  const fmRow = await key.locator('tbody tr').first().locator('td').allInnerTexts()
-  expect(fmRow[0]).toBe('FM')
-  expect(fmRow[2]).toMatch(/^1 SKU · /)
-  expect(fmRow[3]).toMatch(/^1 SKU · /)
-  await expect(await southFmBox(page)).toHaveText(/^1 SKU · /)
-  await expect(await southFmBox(page)).toHaveAttribute('title', /Blended monthly rate/)
-  // No use and No sales SKUs show no days and no rate (#379): their hovers print no Blended monthly rate
-  for (const word of ['No use', 'No sales']) {
-    await expect(key.getByRole('button', { name: `South · ${word}`, exact: true })).not.toHaveAttribute('title', /Blended monthly rate|rate/i)
-  }
-  // The Total row is the SKUs card of each block
-  const total = await key.locator('tbody tr').last().locator('td').allInnerTexts()
-  for (const [i, region] of [[1, 'South'], [2, 'West']]) {
-    const card = await regionLine(page, region)
-    const skus = card.match(/SKUs\s*(\d+)/)[1]
-    expect(total[i]).toMatch(new RegExp(`^${skus} SKUs · `))
+  const before = {}
+  for (const region of ['South', 'West']) {
+    await showRegion(page, region)
+    const key = statusKey(page, region)
+    await expect(key.locator('thead th')).toHaveText(['FM / MM / SM', 'Running out', 'Thin', 'Healthy', 'Heavy', 'Too much', 'No use', 'No sales', 'Total'])
+    // The day limits are CONTEXT.md's (Cover bracket): on each box's hover
+    await expect(key.getByRole('button', { name: `${region} · Running out · FM`, exact: true })).toHaveAttribute('title', /under 7 d/)
+    await expect(key.getByRole('button', { name: `${region} · Too much · SM`, exact: true })).toHaveAttribute('title', /over 180 d/)
+    // FM row: one SKU; the box it sits in reads 1 SKU
+    const fmRow = await key.locator('tbody tr').first().locator('td').allInnerTexts()
+    expect(fmRow[0]).toBe('FM')
+    expect(fmRow[fmRow.length - 1]).toMatch(/^1 · /)
+    await expect(await fmBox(page, region)).toHaveText(/^1 · /)
+    await expect(await fmBox(page, region)).toHaveAttribute('title', /1 SKU, .*Blended monthly rate/)
+    // No use and No sales SKUs show no days and no rate (#379): their hovers print no Blended monthly rate
+    for (const word of ['No use', 'No sales']) {
+      await expect(key.getByRole('button', { name: `${region} · ${word}`, exact: true })).not.toHaveAttribute('title', /Blended monthly rate|rate/i)
+    }
+    // The Total row's Total is the region line's SKUs
+    const total = await key.locator('tbody tr').last().locator('td').allInnerTexts()
+    const skus = (await regionLine(page, region)).match(/SKUs\s*(\d+)/)[1]
+    expect(total[total.length - 1]).toMatch(new RegExp(`^${skus} · `))
+    before[region] = await key.innerText()
   }
   // A plant filter never changes a box
-  const before = await key.innerText()
   await page.getByLabel('Plant', { exact: true }).selectOption({ label: 'NPMD' })
   await showRegion(page, 'South')
   await expect(block(page, 'South').getByText(/NPMD does not serve South/)).toBeVisible()
-  expect(await key.innerText()).toBe(before)
+  expect(await statusKey(page, 'South').innerText()).toBe(before.South)
+  await showRegion(page, 'West')
+  expect(await statusKey(page, 'West').innerText()).toBe(before.West)
 })
 
 test('Status key: a box narrows its own region’s grid only; the chip clears it', async ({ page }) => {
@@ -263,44 +276,40 @@ test('Status key: a box narrows its own region’s grid only; the chip clears it
   await expect(chip('West')).toHaveCount(0)
   await expect(grid('West').locator('tbody tr', { hasText: '50×50' })).toHaveCount(1)
 
-  // No sales (no stock, no sales): picking a South box brings South to the front; South's 50x50 leaves its grid; West still shows its own
-  await statusKey(page).getByRole('button', { name: 'South · No sales', exact: true }).click()
-  await expect(block(page, 'South')).toBeVisible()
-  await expect(statusKey(page).getByRole('button', { name: 'South · No sales', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  // No sales (no stock, no sales): South's 50x50 leaves its grid; West still shows its own
+  await showRegion(page, 'South')
+  await statusKey(page, 'South').getByRole('button', { name: 'South · No sales', exact: true }).click()
+  await expect(statusKey(page, 'South').getByRole('button', { name: 'South · No sales', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(chip('South')).toContainText('No sales')
   await expect(grid('South').locator('tbody tr', { hasText: '50×50' })).toHaveCount(0)
   await showRegion(page, 'West')
   await expect(grid('West').locator('tbody tr', { hasText: '50×50' })).toHaveCount(1)
-  // Picking a West box brings the West block to the front, from South (#389)
+  // A West box narrows West; South keeps its own pick while West is shown
+  await (await fmBox(page, 'West')).click()
+  await expect(chip('West')).toContainText('FM · 1 SKU')
   await showRegion(page, 'South')
-  for (const b of await statusKey(page).getByRole('button', { name: /^West · .+ · FM$/ }).all()) if (await b.isEnabled()) { await b.click(); break }
-  await expect(block(page, 'West')).toBeVisible()
-  await expect(block(page, 'South')).toHaveCount(0)
-  await showRegion(page, 'South')
-  await expect(chip('South')).toContainText('No sales')   // South kept its own pick while West was shown
+  await expect(chip('South')).toContainText('No sales')
 
   // The chip clears it
   await chip('South').click()
   await expect(chip('South')).toHaveCount(0)
   await expect(grid('South').locator('tbody tr', { hasText: '50×50' })).toHaveCount(1)
 
-  // The filter belongs to the Status key tab: another tab shows the whole grid
+  // A pick holds on every screen until its chip clears it (ADR-0018): Worklists shows the same chip
   await (await southFmBox(page)).click()
-  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'Make next · Stock stuck', exact: true }).click()
-  await expect(chip('South')).toHaveCount(0)
+  await goScreen(page, 'Worklists')
+  await expect(chip('South')).toContainText('FM · 1 SKU')
 })
 
 // ── #390: less text — the Key in a dropdown, one-line intros, the Raw material note only in its own view ──
-test('Key: days of cover is a dropdown on the tabs strip (not on Status key); the Raw material note shows only in its view', async ({ page }) => {
+test('Key: days of cover is a dropdown beside the Status key and the Worklists heading; the Raw material note shows only in its view', async ({ page }) => {
   await signIn(page, 'admin', { rows })
   await openSubTab(page)
-  const inner = page.getByRole('group', { name: 'FM / MM / SM tabs' })
   const keyBtn = page.getByRole('button', { name: /^Key: days of cover/ })
   const keyTable = page.getByRole('table', { name: 'Key: FG days of cover brackets' })
-  await expect(keyBtn).toHaveCount(0)                                        // Status key carries every limit itself
   await expect(page.getByText(/plant confirmed this method/)).toHaveCount(0)  // the amber note is not above the blocks
-  for (const name of ['Make next · Stock stuck', 'By FM / MM / SM']) {
-    await inner.getByRole('button', { name, exact: true }).click()
+  for (const name of ['Overview', 'Worklists']) {
+    await goScreen(page, name)
     await expect(keyTable).toHaveCount(0)                                    // folded away until asked for
     await keyBtn.click()
     await expect(keyTable.locator('tbody tr', { hasText: 'FM' }).first()).toBeVisible()
@@ -311,11 +320,10 @@ test('Key: days of cover is a dropdown on the tabs strip (not on Status key); th
     await expect(keyTable).toHaveCount(0)
     await expect(page.getByText(/plant confirmed this method/)).toHaveCount(0)
   }
-  // The By tab's intro is one line; the rest is folded under "How this is worked out"
-  const fold = page.locator('details', { hasText: 'How this is worked out' }).first()
-  await expect(fold).not.toHaveAttribute('open', '')
-  await fold.locator('summary').click()
-  await expect(fold).toContainText('The sections add up to the region’s grid')
+  // Split by tag says in one line what the groups add up to
+  await goScreen(page, 'Overview')
+  await expect(block(page, 'South').locator('label', { has: page.getByRole('switch', { name: 'Split by tag' }) }))
+    .toHaveAttribute('title', /The groups add up to the region’s grid/)
   // The Raw material view carries the note, and its long explanation is folded, not deleted
   await block(page, 'South').getByRole('button', { name: 'Raw material', exact: true }).click()
   const note = block(page, 'South').getByText(/plant confirmed this method \(18-Nov-2026\)/)
@@ -326,17 +334,17 @@ test('Key: days of cover is a dropdown on the tabs strip (not on Status key); th
   await expect(block(page, 'South').getByText(/Raw material available is each cell’s share/)).toBeVisible()
 })
 
-// ── #391: three chips in front, the Dashboard's measures under More ──
-test('each block shows its own chips in front and the Dashboard’s eleven under More; More reads selected while one is on', async ({ page }) => {
+// ── #391: the view chips in front, the Sales screen's measures under More ──
+test('each block shows its own chips in front and the Sales screen’s eleven under More; More reads selected while one is on', async ({ page }) => {
   await signIn(page, 'admin', { rows })
   await openSubTab(page)
   const b = block(page, 'South')
   const show = b.getByRole('group', { name: 'Show' })
   const inFront = (names) => Promise.all(names.map(n => expect(show.getByRole('button', { name: n, exact: true })).toBeVisible()))
   await inFront(['FM / MM / SM view', 'Raw material'])
-  await expect(show.getByRole('button', { name: 'All measures', exact: true })).toHaveCount(0)   // By FM / MM / SM only
+  await expect(show.getByRole('button', { name: 'All measures', exact: true })).toHaveCount(0)   // with Split by tag only
   await expect(show.getByRole('button', { name: 'Stock flow', exact: true })).toHaveCount(0)     // behind More
-  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'By FM / MM / SM', exact: true }).click()
+  await b.getByRole('switch', { name: 'Split by tag' }).check()
   await inFront(['FM / MM / SM view', 'All measures', 'Raw material'])
   const more = b.getByRole('button', { name: /^More/ })
   await expect(more).toHaveAttribute('aria-pressed', 'false')
@@ -346,50 +354,64 @@ test('each block shows its own chips in front and the Dashboard’s eleven under
   await b.getByRole('button', { name: 'Stock flow', exact: true }).click()
   await expect(more).toHaveAttribute('aria-pressed', 'true')
   await expect(b.getByRole('button', { name: 'Stock flow', exact: true })).toHaveCount(0)   // the menu closed
-  await expect(b.getByRole('table', { name: 'Sales by size and thickness · South', exact: true })).toBeVisible()  // the Dashboard's grid, whole
+  await expect(b.getByRole('table', { name: 'Sales by size and thickness · South', exact: true })).toBeVisible()  // the Sales screen's grid, whole
   await b.getByRole('button', { name: 'Raw material', exact: true }).click()
   await expect(more).toHaveAttribute('aria-pressed', 'false')
 })
 
-// ── #392: the FG age table is folded on the sub-tab, open by itself on Make next · Stock stuck ──
-test('FG age starts folded with its 75+ d total; open on Make next · Stock stuck; the Dashboard’s is unchanged', async ({ page }) => {
+// ── #392 → ADR-0018: the FG age table is drawn once, under Sales › Size × Thickness, open; no FM / MM / SM screen carries it ──
+test('FG age is on Sales › Size × Thickness only, open; no FM / MM / SM screen and no other Sales screen draws it', async ({ page }) => {
   await signIn(page, 'admin', { rows })
   await openSubTab(page)
-  const b = block(page, 'South')
-  const age = b.getByRole('table', { name: 'FG age by size and thickness · South' })
-  const sum = b.locator('summary', { hasText: 'FG age · as of' })
-  await expect(sum).toContainText(/FG age · as of \d{2}-[A-Za-z]{3}-\d{4}/)
-  await expect(sum).toContainText(/75\+ d: [\d.,-]+ T/)
-  await expect(age).toBeHidden()                                   // folded on Status key
-  await sum.click()
-  await expect(age).toBeVisible()
-  // the fold line's figure is the table's own 75+ d Total
-  const heads = await age.locator('thead tr').first().locator('th').evaluateAll(els => els.map(e => [e.innerText, e.colSpan]))
-  let end = -1, col = -1
-  for (const [text, span] of heads.slice(2)) { end += span; if (text.startsWith('75+')) { col = end + 2; break } }
-  const total = await age.locator('tbody tr').last().locator('td').allInnerTexts()
-  const fig = (await sum.innerText()).match(/75\+ d: (\S+) T/)[1]
-  expect(total[col]).toBe(fig)
-  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'Make next · Stock stuck', exact: true }).click()
-  await expect(age).toBeVisible()                                   // open by itself here
-  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'By FM / MM / SM', exact: true }).click()
-  await expect(age).toBeHidden()
-  await strip(page).getByRole('button', { name: 'Sales Dashboard', exact: true }).click()
+  for (const name of ['Overview', 'Worklists', 'Production check', 'SKU list']) {
+    await goScreen(page, name)
+    await expect(page.getByRole('table', { name: /^FG age by size and thickness/ })).toHaveCount(0)
+    await expect(page.locator('summary', { hasText: 'FG age · as of' })).toHaveCount(0)
+  }
+  for (const name of ['Production check', 'SKU list']) {
+    await openDashboard(page, 'Sales', name)
+    await expect(page.getByRole('table', { name: /^FG age by size and thickness/ })).toHaveCount(0)
+  }
+  await openDashboard(page, 'Sales', 'Size × Thickness')
   await expect(page.getByRole('table', { name: 'FG age by size and thickness' })).toBeVisible()
   await expect(page.locator('summary', { hasText: 'FG age · as of' })).toHaveCount(0)
 })
 
-// ── #393: smaller type on the sub-tab's own grids (11 px, heads 10 px); the Dashboard's stay 12 px ──
-test('the sub-tab’s grids print 11 px with 10 px heads; the Dashboard’s grid is unchanged', async ({ page }) => {
+// ── #393: smaller type on this dashboard's own grids (11 px, heads 10 px); the Sales screen's stay 12 px ──
+test('the FM / MM / SM grids print 11 px with 10 px heads; the Sales screen’s grid is unchanged', async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 })
   await signIn(page, 'admin', { rows: wide })
   await openSubTab(page)
   const sizes = (t) => t.evaluate(el => [getComputedStyle(el.querySelector('tbody td')).fontSize, getComputedStyle(el.querySelector('thead th')).fontSize])
   const grid = block(page, 'South').getByRole('table', { name: 'Sales by size and thickness · South' })
   expect(await sizes(grid)).toEqual(['11px', '10px'])
-  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'By FM / MM / SM', exact: true }).click()
-  await block(page, 'South').getByRole('button', { name: 'FM / MM / SM view', exact: true }).click()
-  expect(await sizes(block(page, 'South').getByRole('table', { name: 'Sales by size and thickness · South · FM', exact: true }))).toEqual(['11px', '10px'])
-  await strip(page).getByRole('button', { name: 'Sales Dashboard', exact: true }).click()
+  await block(page, 'South').getByRole('switch', { name: 'Split by tag' }).check()
+  expect(await sizes(block(page, 'South').getByRole('table', { name: 'Sales by size and thickness · South · split by tag', exact: true }))).toEqual(['11px', '10px'])
+  await openDashboard(page, 'Sales', 'Size × Thickness')
   expect(await sizes(page.getByRole('table', { name: 'Sales by size and thickness' }))).toEqual(['12px', '12px'])
 })
+
+// ── All (owner, 20-Nov-2026): every region, one under the other — each its own figures, Status key and grid, never added up ──
+test('All shows South then West, each with its own figures, Status key and grid; a pick stays in its region', async ({ page }) => {
+  await signIn(page, 'admin', { rows })
+  await openSubTab(page)
+  const figs = (text) => [text.match(/SKUs\s*(\d+)/)[1], text.match(/\(FM[^)]*\)/)[0], text.match(/Blended monthly rate\s*([\d.,]+)/)[1], text.match(/Current inventory\s*([\d.,]+)/)[1]]
+  const single = { South: figs(await regionLine(page, 'South')), West: figs(await regionLine(page, 'West')) }
+  await showRegion(page, 'All')
+  await expect(page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: 'All', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  // both blocks, South first; each region's own Status key; no added-up key
+  expect(await page.getByRole('region', { name: / block$/ }).evaluateAll(els => els.map(e => e.getAttribute('aria-label')))).toEqual(['South block', 'West block'])
+  for (const r of ['South', 'West']) await expect(statusKey(page, r)).toBeVisible()
+  await expect(page.getByRole('table', { name: /^Status key · All/ })).toHaveCount(0)
+  // each region's figures are exactly what that region shows alone
+  for (const r of ['South', 'West']) expect(figs(await page.getByTestId(`fm-mm-sm-region-line-${r}`).innerText())).toEqual(single[r])
+  // a South pick narrows South only, and All stays on
+  await (await southFmBox(page)).click()
+  await expect(block(page, 'South').getByRole('button', { name: 'Clear the South status filter' })).toBeVisible()
+  await expect(block(page, 'West').getByRole('button', { name: 'Clear the West status filter' })).toHaveCount(0)
+  await expect(block(page, 'West')).toBeVisible()
+  // Worklists under All: each region's lists, in its own block
+  await goScreen(page, 'Worklists')
+  for (const r of ['South', 'West']) await expect(block(page, r).getByRole('region', { name: `Make next · ${r}` })).toBeVisible()
+})
+

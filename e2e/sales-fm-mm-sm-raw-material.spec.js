@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
-import { signIn } from './signin.js'
+import { signIn, openDashboard } from './signin.js'
 
-// ── Sales tab, FM / MM / SM sub-tab: Raw material available and required (#382) ─────────────────────────
+// ── Dashboards › FM / MM / SM: Raw material available and required (#382; ADR-0018) ─────────────────────
 // The split is calc's (`fmMmSmRawMaterial`, unit-tested on the frozen invented fixture). What only a browser
 // answers: the chip's two measures per cell in each block, the shared-cell mark and its hover, the by-plant
 // table, the two Make next columns, the visible "plant confirmed" note, and that West never sees a
@@ -9,7 +9,6 @@ import { signIn } from './signin.js'
 // South stock, so Production required is 5 and 3. Hyderabad (South) holds one 196 mm 1.6 mm slit coil of 4 T,
 // which fits both (strip 196 mm): split 4 × 5/8 = 2.5 and 4 × 3/8 = 1.5, so 2.5 and 1.5 T still required.
 // NPMD (West) holds the same coil at 6 T: never South's.
-const tab = (page, name) => page.getByRole('button', { name, exact: true })
 const SHS_50x50_16 = '1139-13064-10059417'    // DEFAULT_SKUS: MS SHS … 50x50x1.60x6000
 const RHS_60x40_16 = '1140-13075-10059474'    // DEFAULT_SKUS: MS RHS … 60x40x1.60x6000
 const now = new Date()
@@ -31,11 +30,9 @@ const rows = {
 const block = (page, region) => page.getByRole('region', { name: `${region} block` })
 // #389: one region block is shown at a time; a spec that reads the other region switches to it first.
 const showRegion = (page, region) => page.getByRole('group', { name: 'Region', exact: true }).getByRole('button', { name: region, exact: true }).click()
-const open = async (page, inner = 'Status key') => {
+const open = async (page, screen = 'Overview') => {
   await signIn(page, 'admin', { rows })
-  await tab(page, 'Sales').click()
-  await page.getByRole('group', { name: 'Sales view' }).getByRole('button', { name: 'FM / MM / SM', exact: true }).click()
-  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: inner, exact: true }).click()
+  await openDashboard(page, 'FM / MM / SM', screen)
   await expect(block(page, 'South')).toBeVisible()
 }
 const cellTexts = (grid, size) => grid.locator('tbody tr', { hasText: size }).first().locator('td').allInnerTexts()
@@ -84,7 +81,7 @@ test('Raw material by plant: HR coil, slit coil that fits, fits no size, off the
 })
 
 test('Make next carries Raw material available and required for the SKU’s cell', async ({ page }) => {
-  await open(page, 'Make next · Stock stuck')
+  await open(page, 'Worklists')
   const list = block(page, 'South').getByRole('table', { name: 'Make next · South' })
   await expect(list.locator('thead')).toContainText('Raw material available (T)')
   await expect(list.locator('thead')).toContainText('Raw material required (T)')
@@ -94,7 +91,7 @@ test('Make next carries Raw material available and required for the SKU’s cell
 
 test('the Sales Dashboard’s Raw material chip is unchanged: the shared coil sits in both sizes', async ({ page }) => {
   await signIn(page, 'admin', { rows })
-  await tab(page, 'Sales').click()
+  await openDashboard(page, 'Sales', 'Size × Thickness')
   await page.getByRole('button', { name: 'Raw material', exact: true }).click()
   const grid = page.getByRole('table', { name: 'Sales by size and thickness' })
   await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · Hyderabad' })).toBeVisible()

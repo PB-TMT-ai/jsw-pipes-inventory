@@ -289,6 +289,14 @@ rate** instead of Invoiced 30d, and the stock is **stock now** (the Dashboard's 
 region), not Open on the 1st: stock now ÷ (Blended monthly rate ÷ 30). The heading says *blended*.
 _Avoid_: stock days, runway, inventory days, days cover, Cover d, SKU cover
 
+**Coil days of cover** / **FG days of cover**:
+The two screen names of **Days of cover**, one per stock, so a reader never has to guess which.
+**Coil days of cover** is the raw-material one — HR + slit coil T ÷ (Produced 30d ÷ 30) — on the Coil
+Tracker (ADR-0018 renamed its "Days of cover" field and column). **FG days of cover** is finished pipe —
+Current inventory ÷ (Invoiced 30d ÷ 30) — on Plant drill; *FG days of cover (blended)* uses the Blended
+monthly rate. Same arithmetic, different stock and rate: never compare one with the other.
+_Avoid_: Days of cover (alone, on a screen), RM days of cover (on the dashboards)
+
 **Thickness bucket**:
 One of the seven standard raw-material thicknesses — **1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm** —
 that the Coil Tracker's stock-by-plant table opens each plant into. A coil goes to the **nearest**
@@ -322,6 +330,20 @@ the same figure. The Sales tab's distributor drill-down and the PB MTD workbook'
 card are a **different** figure — company-wide, and they subtract *Reserved* (the raw ERP Release −
 Invoiced, which ADR-0014 rejected) rather than Confirmed. Never reconcile the two.
 _Avoid_: Free Stock (retired, ADR-0017); available stock, uncommitted stock, ATP, sellable stock
+
+**Free in area**:
+The screen name of **Free Inventory** above on the Sales distributor drill-down (Dashboards › Sales ›
+Distributor, ADR-0018): Current inventory at the plants serving the distributor's area less that area's
+Confirmed. Its CSV header still says `Free Inventory (T)`, and the PB MTD workbook still says
+`Free Inventory (area)` — a spreadsheet looks those up by name.
+_Avoid_: Free Inventory (as a screen label)
+
+**Free after reserved**:
+The screen name of the *still open* figure above — the SKU-wise Inventory column on Dashboards ›
+Inventory › Activity: Current inventory − Reserved, one SKU, company-wide. A **different** figure from
+Free in area (it subtracts Reserved, not the area's Confirmed); the two names exist so they cannot be read
+as one. Its CSV header still says `Free Inventory (T)`.
+_Avoid_: Free Inventory, Free FG (as screen labels)
 
 **Free inventory, by plant**:
 What one named plant holds of one size **less its share of what the service area has already

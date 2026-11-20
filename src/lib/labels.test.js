@@ -36,6 +36,10 @@ export const RETIRED = {
   '>Untagged<': 'Not tagged / Outside the plan', "'Untagged'": 'Not tagged / Outside the plan', 'All metrics': 'All measures',
   // #382, Raw material on the sub-tab ("Coil shortfall" stays: it is Planning's own figure)
   'RM gap': 'Raw material required', 'Coil share': 'Raw material available',
+  // ADR-0018, one Dashboards tab: the screen names "Free Inventory" split in two (CSV headers keep "Free Inventory (T)",
+  // so only the screen forms are matched); the By FM / MM / SM screen is the Split by tag switch; Sales & activity is Activity.
+  "label: 'Free Inventory": 'Free after reserved / Free in area', '>Free Inventory<': 'Free after reserved / Free in area',
+  'By FM / MM / SM': 'Split by tag', 'Sales & activity': 'Activity',
   // Whole book: the user chose Total Orders (Nov-2026). Planning's typed Monthly Indent is a different figure and keeps its name.
   'INDENT (MT)': 'TOTAL ORDERS (MT)', "'Indent (MT)'": 'Total Orders (MT)', 'Invoiced ÷ Indent': 'Invoiced ÷ Total Orders', "label: 'Indent'": 'Total Orders', "'Pending to Serve', 'Indent'": 'Total Orders',
 }

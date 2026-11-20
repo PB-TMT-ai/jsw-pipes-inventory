@@ -3308,6 +3308,13 @@ describe('APP_TABS', () => {
     expect(keys).not.toContain('tubes')
     expect(keys).not.toContain('bundles')
   })
+
+  it('folds Coil Tracker and Sales into Dashboards (ADR-0018)', () => {
+    const keys = APP_TABS.map(t => t.key)
+    expect(keys).not.toContain('coilTracker')
+    expect(keys).not.toContain('sales')
+    expect(APP_TABS[0].label).toBe('Dashboards')
+  })
 })
 
 describe('accessFor', () => {
@@ -3384,9 +3391,9 @@ describe('accessFor', () => {
     expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain('productionPlanning')
   })
 
-  it('gives a plant user the four viewing tabs', () => {
+  it('gives a plant user the viewing tabs', () => {
     const keys = keysOf(accessFor(hyd))
-    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'coilTracker', 'dispatch', 'sales']))
+    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'dispatch']))
   })
 
   it('offers the manufacturing tabs only to a plant that manufactures', () => {
@@ -3399,7 +3406,7 @@ describe('accessFor', () => {
     expect(plantById(NEVER_MANUFACTURES.id, MASTER_WITH_FICTIONAL_PLANTS)?.manufactures).toBe(false)
     mfg.forEach(k => expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain(k))
     // …but it keeps everything that is not a shop-floor stage.
-    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'orders']))
   })
 
   it('keeps an admin’s manufacturing tabs regardless of the selected plant', () => {
