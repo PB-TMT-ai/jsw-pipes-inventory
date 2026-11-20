@@ -5498,55 +5498,31 @@ function FmMmSmWorklist({ listKey, name, how, region, lists, onFind, to }) {
 // blocks (#379 Status key, #380 Make next · Stock stuck, #381 By FM / MM / SM fill them), and every tab ends
 // with the same region blocks, one shown at a time (#389, a South | West switch and one line of figures), each the Dashboard's Size × Thickness section fixed to
 // that region (its own filters, its three views, FG age last), then the Tagged / Not tagged check.
-// The Dashboards › FM / MM / SM sub-tabs (ADR-0018). The grid is a screen of its own, never repeated under the
-// Status key or the lists. PROTOTYPE (?proto=M1|M2|M3): three ways to place the Status key — throwaway, pick one.
-const FM_MM_SM_VIEWS = [['check', 'Production check'], ['list', 'SKU list']]
-const FM_PROTO = [
-  ['M1', 'Status key + lists on one screen', [['key', 'Status & lists'], ['grid', 'Grid'], ...FM_MM_SM_VIEWS]],
-  ['M2', 'Status key on top of the grid', [['grid', 'Status key & grid'], ['next', 'Make next · Stock stuck'], ...FM_MM_SM_VIEWS]],
-  ['M3', 'Each on its own screen', [['status', 'Status key'], ['next', 'Make next · Stock stuck'], ['grid', 'Grid'], ...FM_MM_SM_VIEWS]],
-]
-const fmProto = (v) => FM_PROTO.find(([k]) => k === v) || FM_PROTO[0]
-function ProtoSwitcher({ variant, setVariant }) {
-  const i = Math.max(0, FM_PROTO.findIndex(([k]) => k === variant))
-  const step = (d) => {
-    const k = FM_PROTO[(i + d + FM_PROTO.length) % FM_PROTO.length][0]
-    const u = new URL(window.location.href); u.searchParams.set('proto', k); window.history.replaceState(null, '', u)
-    setVariant(k)
-  }
-  const btn = 'w-8 h-8 rounded-full hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white'
-  return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-full bg-fuchsia-700 text-white shadow-2xl ring-2 ring-white px-2 py-1 text-sm">
-      <button type="button" aria-label="Previous variant" onClick={() => step(-1)} className={btn}>←</button>
-      <span className="font-semibold whitespace-nowrap">Prototype {FM_PROTO[i][0]} — {FM_PROTO[i][1]}</span>
-      <button type="button" aria-label="Next variant" onClick={() => step(1)} className={btn}>→</button>
-    </div>
-  )
-}
+// The Dashboards › FM / MM / SM sub-tabs (ADR-0018; layout M2, owner 20-Nov-2026). Overview = the Status key
+// on top of the region's grid; Worklists = Make next and Stock stuck. The grid is drawn on Overview only.
+const FM_MM_SM_TABS = [['grid', 'Overview'], ['next', 'Worklists'], ['check', 'Production check'], ['list', 'SKU list']]
 
 function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant,
-  planningRows, allProductions, allDispatches, inner = 'key', proto = 'M1', onNavigate = () => {} }) {
+  planningRows, allProductions, allDispatches, inner = 'grid', onNavigate = () => {} }) {
   const todayStr = today()
-  // What the open screen shows. The grid is drawn on one screen only; Production check and SKU list are its views.
-  const showKey = inner === 'key' || inner === 'status' || (proto === 'M2' && inner === 'grid')
-  const showLists = inner === 'key' || inner === 'next'
+  // What the open screen shows: Overview = Status key + grid; Worklists = the lists only; Production check and SKU list are the grid's views.
+  const showKey = inner === 'grid'
+  const showLists = inner === 'next'
   const showGrid = ['grid', 'check', 'list'].includes(inner)
   const gridView = inner === 'check' || inner === 'list' ? inner : 'grid'
   // The tag feed: whole stores, every plant, as of today (fmMmSmFeed). The grids below get the
   // plant-filtered stores, so their Closing stock, Dispatch, Pending and Production required follow the header.
   const feed = useMemo(() => fmMmSmFeed({ productions: allProductions, dispatches: allDispatches, skus, plants, stored: planningRows, today: todayStr }),
     [allProductions, allDispatches, skus, plants, planningRows, todayStr])
-  // Status key (#379): the cell picked per region ({ South: key | null, West: … }). It narrows that region's lists
-  // and grid on every screen until cleared (the chip on the block); on M3 picking one opens the grid.
+  // Status key (#379): the cell picked per region ({ South: key | null, West: … }). It narrows that region's grid and
+  // lists on every screen until cleared (the chip on the block).
   const [statusPick, setStatusPick] = useState({})
   // #389: one region block at a time. Both stay mounted (the inactive one is `hidden`) so a region keeps its own filters, dates and chip.
   const [shown, setShown] = useState('South')
   const pickStatus = (region, key) => {
     setShown(region)
     setStatusPick(p => ({ ...p, [region]: p[region] === key ? null : key }))
-    if (proto === 'M3' && key) onNavigate('fm', 'grid')
   }
-  const gridScreen = fmProto(proto)[2].find(([k]) => k === 'grid')?.[0] || 'grid'
   const shownBlock = feed.find(b => b.region === shown)
   return (
     <div className="space-y-6">
@@ -5556,13 +5532,12 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
           <PopMenu label="Key: days of cover" className="right-0 w-max max-w-[40rem] p-3"><FmMmSmKey /></PopMenu>
         </div>
       )}
-      {showKey && shownBlock && <FmMmSmStatusMatrix block={shownBlock} picked={statusPick[shown] || null} onPick={k => pickStatus(shown, k)}
-        how={proto === 'M1' ? 'narrows the lists below and the grid' : proto === 'M2' ? 'narrows the grid below' : 'opens the grid narrowed to them'} />}
-      {(inner === 'check' || inner === 'list') && <p className="text-sm text-slate-500 dark:text-slate-400">The region shown, as <strong>{inner === 'check' ? 'Production check' : 'SKU list'}</strong> — the same figures as Sales › {inner === 'check' ? 'Production check' : 'SKU list'} with Region on that region. Tag and cover show on the grid screen.</p>}
+      {showKey && shownBlock && <FmMmSmStatusMatrix block={shownBlock} picked={statusPick[shown] || null} onPick={k => pickStatus(shown, k)} />}
+      {(inner === 'check' || inner === 'list') && <p className="text-sm text-slate-500 dark:text-slate-400">The region shown, as <strong>{inner === 'check' ? 'Production check' : 'SKU list'}</strong> — the same figures as Sales › {inner === 'check' ? 'Production check' : 'SKU list'} with Region on that region. Tag and cover show on Overview.</p>}
       {(showLists || showGrid) && feed.map(b => (
         <FmMmSmRegionBlock key={b.region} block={b} hidden={b.region !== shown} orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils}
           skus={skus} plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant} month={todayStr.slice(0, 7)}
-          view={gridView} showGrid={showGrid} onFound={() => onNavigate('fm', gridScreen)}
+          view={gridView} showGrid={showGrid} onFound={() => onNavigate('fm', 'grid')}
           status={statusPick[b.region] || null} onClearStatus={() => pickStatus(b.region, null)}
           worklists={showLists} />
       ))}
@@ -5573,7 +5548,7 @@ function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus,
 // The Status key as one matrix for the region shown (owner's pick, 20-Nov-2026): rows FM, MM, SM, No sales;
 // columns the five FG days of cover brackets, then No use and No sales. Each SKU sits in exactly one cell
 // (`fmMmSmStatusBoxes`), so rows and columns add up to the region line's SKUs. Cell = SKUs · Current inventory.
-function FmMmSmStatusMatrix({ block, picked, onPick, how }) {
+function FmMmSmStatusMatrix({ block, picked, onPick }) {
   const { region, rows } = block
   const { groups, total } = fmMmSmStatusBoxes(rows)
   const tagGroups = groups.filter(g => g.tag !== 'No sales')
@@ -5587,7 +5562,7 @@ function FmMmSmStatusMatrix({ block, picked, onPick, how }) {
     <section aria-label={`Status key · ${region}`} className="space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4">
         <h3 className="text-base font-semibold text-slate-900 dark:text-white">Status key · {region}</h3>
-        <span className="text-xs text-slate-500 dark:text-slate-400">SKUs · Current inventory, as of today. Click a cell: it {how}.</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400">SKUs · Current inventory, as of today. Click a cell to narrow the grid below.</span>
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm tabular-nums border-y border-slate-200 dark:border-slate-700" aria-label={`Status key · ${region}`}>
@@ -8173,18 +8148,17 @@ const DASHBOARDS = [
   { key: 'coil', label: 'Coil Tracker', screens: COIL_TRACKER_VIEWS },
   { key: 'sales', label: 'Sales', screens: [['month', 'This month'], ['dist', 'Distributor'], ['grid', 'Size × Thickness'],
     ['check', 'Production check'], ['list', 'SKU list'], ['monthwise', 'Month-wise'], ['dispatch', 'Dispatch']] },
-  { key: 'fm', label: FM_MM_SM_NAME, screens: FM_PROTO[0][2], admin: true },
+  { key: 'fm', label: FM_MM_SM_NAME, screens: FM_MM_SM_TABS, admin: true },
 ]
 function Dashboards({ showFm, children }) {
-  const [proto, setProto] = useState(() => fmProto(new URLSearchParams(window.location.search).get('proto'))[0])
-  const boards = DASHBOARDS.filter(b => !b.admin || showFm).map(b => b.key === 'fm' ? { ...b, screens: fmProto(proto)[2] } : b)
+  const boards = DASHBOARDS.filter(b => !b.admin || showFm)
   // The open dashboard and each one's last screen: a UI preference kept on this device (`jsw:dashScreen`),
   // never data. Anything unreadable — an older value, a dashboard this login does not get — opens the first.
   const [pick, setPick] = useState(() => { const v = LS.get('jsw:dashScreen'); return v && typeof v === 'object' ? v : {} })
   const board = boards.find(b => b.key === pick.board) || boards[0]
   const screenOf = (key) => {
     const v = pick.screens?.[key]
-    const { screens } = boards.find(b => b.key === key) || DASHBOARDS.find(b => b.key === key)
+    const { screens } = DASHBOARDS.find(b => b.key === key)
     return screens.some(([k]) => k === v) ? v : screens[0][0]
   }
   const go = (key, screen) => {
@@ -8197,8 +8171,7 @@ function Dashboards({ showFm, children }) {
     <div className="space-y-4">
       <ScreenTabs label="Dashboard" tabs={boards.map(b => [b.key, b.label])} value={board.key} onChange={k => go(k)} />
       <Segmented role="tablist" label={`${board.label} screens`} options={board.screens} value={screen} onChange={k => go(board.key, k)} />
-      {children({ board: board.key, screen, screenOf, go, proto })}
-      {board.key === 'fm' && <ProtoSwitcher variant={proto} setVariant={setProto} />}
+      {children({ board: board.key, screen, screenOf, go })}
     </div>
   )
 }
@@ -8431,7 +8404,7 @@ function InventoryApp({ session, onLogout }) {
             is a regional fact the header plant selector must not move. `estimates` and `stateRegions` stay
             UNFILTERED for Sales — Best Estimate is keyed by distributor and Region by state; neither carries a
             plant, and #117 puts a per-plant Best Estimate out of scope. */}
-        {tab === 'dashboard' && <Dashboards showFm={access.fmMmSmSubTab}>{({ board, screen, screenOf, go, proto }) =>
+        {tab === 'dashboard' && <Dashboards showFm={access.fmMmSmSubTab}>{({ board, screen, screenOf, go }) =>
           board === 'inventory' || board === 'drill'
             ? <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
                 trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
@@ -8453,7 +8426,7 @@ function InventoryApp({ session, onLogout }) {
             : <FmMmSmSubTab orders={plantOrders} dispatches={plantDispatches} productions={plantProductions} coils={plantCoils} babyCoils={plantBabyCoils} skus={skus}
                 plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant}
                 planningRows={planningRows} allProductions={resolvedProductions} allDispatches={dispatches} inner={screen}
-                proto={proto} onNavigate={go} />
+                onNavigate={go} />
         }</Dashboards>}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
           operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}
