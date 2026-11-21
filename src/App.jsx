@@ -4077,6 +4077,14 @@ function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, r
   const onUploadInvoices = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
+    // The coil trace skips what earlier invoices took and draws from production. If either table
+    // failed to load, it restarts at the oldest tubes and double-claims them (31-Oct-2026: 1,276 T).
+    const notLoaded = ['dispatches', 'productions'].filter(t => t in failedLoads())
+    if (notLoaded.length) {
+      setInvoiceMsg({ kind: 'err', text: `Not uploaded — ${notLoaded.join(' and ')} did not load from the database. Press Retry on the red banner, then upload again.` })
+      if (invoiceFileRef.current) invoiceFileRef.current.value = ''
+      return
+    }
     try {
       const { XLSX, wb } = await readWorkbook(file)
       // The register is a single-sheet export. Prefer a sheet named like /invoice/i if one exists,
