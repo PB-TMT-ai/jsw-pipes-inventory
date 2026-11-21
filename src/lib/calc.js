@@ -2870,11 +2870,15 @@ export function fmMmSmRawBySection(raw, tagSections = []) {
 // `keyOf` (default identity) lets the production↔dispatch match key on the canonical physical
 // identity rather than an exact code string — so a dispatch coded differently from its production
 // still inherits the right coil trace. Callers pass skuKeyResolver(skus) to enable it.
-export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excludeDispatchId = null, keyOf = (c) => c) {
+// `plant` scopes both sides to one plant: a tube invoiced from Tapi was made at Tapi, so it may only
+// draw Tapi's production and only Tapi's earlier invoices drain that queue. Without it (null) every
+// plant pooled into one queue and 1,435 T of invoices sat on another plant's coils (Nov-2026).
+export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excludeDispatchId = null, keyOf = (c) => c, plant = null) {
   const need = Math.max(0, Math.floor(Number(pieces || 0)))
   const wantKey = keyOf(skuCode)
   const ledger = []
-  ;(productions || []).filter(p => !p.deleted && keyOf(p.skuCode) === wantKey)
+  const atPlant = (x) => !plant || x.plant === plant
+  ;(productions || []).filter(p => !p.deleted && keyOf(p.skuCode) === wantKey && atPlant(p))
     .sort((a, b) => String(a.dateOfProduction || '').localeCompare(String(b.dateOfProduction || '')))
     .forEach(p => (p.coilAllocations || []).forEach(a =>
       ledger.push({ babyCoilId: a.babyCoilId, hrCoilId: a.hrCoilId, pieces: Number(a.pieces || 0), weight: Number(a.weight || 0) })))
@@ -2883,7 +2887,7 @@ export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excl
   const alreadyDispatched = (dispatches || [])
     .filter(d => !d.deleted && d.id !== excludeDispatchId)
     .flatMap(d => d.bundleEntries || [])
-    .filter(e => keyOf(e.skuCode) === wantKey)
+    .filter(e => keyOf(e.skuCode) === wantKey && atPlant(e))
     .reduce((s, e) => s + Number(e.pieces || 0), 0)
   const drain = (qty, sink) => {
     let q = qty
@@ -3045,7 +3049,7 @@ export function assembleDispatchRecords(parsed, { skus, productions, dedupeAgain
   const records = {}
   let lineCount = 0
   toImport.forEach((r) => {
-    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx(), null, skuKeyOf)
+    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx(), null, skuKeyOf, r.plant || null)
     const entry = {
       invoiceNo: r.invoiceNo, skuCode: r.skuCode, pieces: r.pieces, weight: r.weight,
       length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
