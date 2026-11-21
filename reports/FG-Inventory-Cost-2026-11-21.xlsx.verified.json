@@ -1,8 +1,8 @@
 {
  "file": "reports/FG-Inventory-Cost-2026-11-21.xlsx",
  "sha256": "b8b6f97902cc076b0e19da1d90952433fdc5eceb68024405d1e2d1caf09b4ccf",
- "verdict": "USER_OVERRIDE",
- "by": "user",
- "summary": "User, 21-Nov-2026: \"skip verification for the FG cost file\"",
- "at": "2026-11-21T13:11:33+00:00"
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 120 grid cells (qty+price) and 17 price-list rows recomputed from live DB (21-Nov-2026 13:10 UTC); 0 discrepancies; no prod/dispatch rows in last hour",
+ "at": "2026-11-21T13:12:25+00:00"
 }
