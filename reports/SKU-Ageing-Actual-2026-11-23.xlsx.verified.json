@@ -1,8 +1,8 @@
 {
  "file": "reports/SKU-Ageing-Actual-2026-11-23.xlsx",
- "sha256": "dac881131238d5a9e2f7b8d7a88537e3ce80ba70fefc869afdf58f0c7f7dcfae",
+ "sha256": "f9943a3fe301970d3c2d3adc1534d1a7c2b47433c5733915b1cb011cc2cbaa6f",
  "verdict": "PASS",
  "by": "data-verifier",
- "summary": "Re-check: 1629 figures (both tabs, totals, Summary, all 120 FIFO layers) recomputed from live DB + count images; Free as printed (Tapi 594.0); 25.4OD rows aged as Hyderabad CHS 20 NB per rule; data current (last entry 05:06 23-Nov)",
- "at": "2026-11-23T07:51:50+00:00"
+ "summary": "4 plants: 2301 cell checks vs live DB (prod to 21-Nov, inv to 21-Nov), 0 discrepancies; Tapi/Nippon rows re-checked vs count images",
+ "at": "2026-11-23T08:05:22+00:00"
 }

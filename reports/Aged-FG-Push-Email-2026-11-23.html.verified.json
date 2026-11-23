@@ -1,8 +1,8 @@
 {
  "file": "reports/Aged-FG-Push-Email-2026-11-23.html",
- "sha256": "4af34f1d9df02804ce7001dbdc6c0fb939e0ca81efca40e2e2c295162d792330",
- "verdict": "PASS",
+ "sha256": "1c74f260e86e7df7a10e0ec4d870031df2c66566fba851b475190a77a33dda80",
+ "verdict": "FAIL",
  "by": "data-verifier",
- "summary": "All mail figures recomputed: sections 1-3, headline, capped Sold since 16-Nov (Hyd 44.0, Tapi 44.1), 2.8=x3 mapping plausibility, small-SKU groups, not-a-tonne list (15), action claims; all within 0.1 MT",
- "at": "2026-11-23T07:51:50+00:00"
+ "summary": "NPMD action text lists RHS 80x40 x 2 as 71 MT over 60 days (actual 36.2; list sums 99 vs 64 headline); intro claim 'agree SKU by SKU within ~1 MT' false for Lepakshi 72x72x5 (+7.7), 122x61x2.5 (+8.1), 96x48x5 (+9.1)",
+ "at": "2026-11-23T08:05:22+00:00"
 }
