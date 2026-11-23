@@ -1,0 +1,8 @@
+{
+ "file": "reports/SKU-Ageing-Actual-2026-11-23.xlsx",
+ "sha256": "78997a4f6f8f1554e05a0d9141af1f7711daa8088a1cb2e18628f2d2560aa1e3",
+ "verdict": "FAIL",
+ "by": "data-verifier",
+ "summary": "1589 figures recomputed from live DB + count images; all ageing/book/FIFO/totals match; FAIL on transcription: Tapi 80x80x4 Free 0.3 vs sheet 0 (and Tapi Free total 594.3 vs sheet 595, not noted)",
+ "at": "2026-11-23T07:40:05+00:00"
+}
