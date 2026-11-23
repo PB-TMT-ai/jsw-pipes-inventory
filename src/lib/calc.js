@@ -2870,11 +2870,15 @@ export function fmMmSmRawBySection(raw, tagSections = []) {
 // `keyOf` (default identity) lets the production↔dispatch match key on the canonical physical
 // identity rather than an exact code string — so a dispatch coded differently from its production
 // still inherits the right coil trace. Callers pass skuKeyResolver(skus) to enable it.
-export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excludeDispatchId = null, keyOf = (c) => c) {
+// `plant` scopes both sides to one plant: a tube invoiced from Tapi was made at Tapi, so it may only
+// draw Tapi's production and only Tapi's earlier invoices drain that queue. Without it (null) every
+// plant pooled into one queue and 1,435 T of invoices sat on another plant's coils (Nov-2026).
+export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excludeDispatchId = null, keyOf = (c) => c, plant = null) {
   const need = Math.max(0, Math.floor(Number(pieces || 0)))
   const wantKey = keyOf(skuCode)
   const ledger = []
-  ;(productions || []).filter(p => !p.deleted && keyOf(p.skuCode) === wantKey)
+  const atPlant = (x) => !plant || x.plant === plant
+  ;(productions || []).filter(p => !p.deleted && keyOf(p.skuCode) === wantKey && atPlant(p))
     .sort((a, b) => String(a.dateOfProduction || '').localeCompare(String(b.dateOfProduction || '')))
     .forEach(p => (p.coilAllocations || []).forEach(a =>
       ledger.push({ babyCoilId: a.babyCoilId, hrCoilId: a.hrCoilId, pieces: Number(a.pieces || 0), weight: Number(a.weight || 0) })))
@@ -2883,7 +2887,7 @@ export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excl
   const alreadyDispatched = (dispatches || [])
     .filter(d => !d.deleted && d.id !== excludeDispatchId)
     .flatMap(d => d.bundleEntries || [])
-    .filter(e => keyOf(e.skuCode) === wantKey)
+    .filter(e => keyOf(e.skuCode) === wantKey && atPlant(e))
     .reduce((s, e) => s + Number(e.pieces || 0), 0)
   const drain = (qty, sink) => {
     let q = qty
@@ -3045,7 +3049,7 @@ export function assembleDispatchRecords(parsed, { skus, productions, dedupeAgain
   const records = {}
   let lineCount = 0
   toImport.forEach((r) => {
-    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx(), null, skuKeyOf)
+    const allocs = dispatchCoilTrace(r.skuCode, r.pieces, productions, traceCtx(), null, skuKeyOf, r.plant || null)
     const entry = {
       invoiceNo: r.invoiceNo, skuCode: r.skuCode, pieces: r.pieces, weight: r.weight,
       length: r.sku?.length || 6000, width: '', thickness: r.sku?.thickness ?? '',
@@ -3542,8 +3546,10 @@ export const ROLE_PLANT = 'plant'
 // decides which of these render, and a second list in the component is a list that drifts: a tab
 // added there and not here would be shown to everyone by a rule that had never heard of it.
 export const APP_TABS = [
-  { key: 'dashboard', label: 'Dashboard' },
-  { key: 'coilTracker', label: 'Coil Tracker' },
+  // One tab for every dashboard (ADR-0018): Inventory, Plant drill, Coil Tracker, Sales and FM / MM / SM
+  // are its first-level tabs, so Coil Tracker and Sales are no longer tabs here. The KEY stays
+  // `dashboard` — it is what every role is granted.
+  { key: 'dashboard', label: 'Dashboards' },
   { key: 'coilInward', label: '1. Coil Inward' },
   { key: 'slitting', label: '2. Slitting' },
   { key: 'production', label: '3. Production' },
@@ -3553,7 +3559,6 @@ export const APP_TABS = [
   // PLANT_READ_ONLY_TABS names, so renaming it would silently move a permission.
   { key: 'skuMaster', label: 'Masters' },
   { key: 'orders', label: 'Orders & Invoice' },
-  { key: 'sales', label: 'Sales' },
   // Admin-only (#275): the planning master, and later the monthly and weekly campaigns (#248).
   { key: 'productionPlanning', label: 'Production Planning' },
   { key: 'reports', label: 'Reports' },
@@ -3599,8 +3604,8 @@ const NO_ACCESS = { tabs: [], readOnly: [], plantSelector: false, plant: '', fmM
 //   plantSelector whether the header offers the plant selector
 //   plant          the plant every scoped view is filtered to — ALL_PLANTS for an admin (who then
 //                  moves it with the selector), the user's own plant for a plant user (who cannot)
-//   fmMmSmSubTab   whether the Sales tab offers its FM / MM / SM sub-tab (#384) — admin only. A screen
-//                  gate inside a tab both roles see, so it is a field here, never a `session.role` check
+//   fmMmSmSubTab   whether Dashboards offers its FM / MM / SM dashboard (#384, ADR-0018) — admin only. A
+//                  screen gate inside a tab both roles see, so it is a field here, never a `session.role` check
 //
 // An admin's `plant` is where the selector STARTS; a plant user's is where it is pinned. That is
 // the whole difference, and it is why `plantSelector` and `plant` come out of the same function:

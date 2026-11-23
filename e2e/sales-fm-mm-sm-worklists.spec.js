@@ -1,13 +1,13 @@
 import { test, expect } from '@playwright/test'
-import { signIn } from './signin.js'
+import { signIn, openDashboard } from './signin.js'
 
-// ── Sales tab, FM / MM / SM sub-tab: Make next · Stock stuck (#380) ─────────────────────────────────────
+// ── Dashboards › FM / MM / SM › Worklists: Make next and Stock stuck (#380; ADR-0018) ────────────────────
 // Membership, order, the No stock marker and the section totals are calc's (`fmMmSmWorklists`, unit-tested in
 // src/lib/fm-mm-sm-worklists.test.js). What only a browser answers: the lists sit in each region block, never
-// mixed; the marker shows; the Priority / Size switch is there per section; a SKU clicked is found in that
-// block's grid. Rows are invented: SHS 50x50 1.6 sells in the South with nothing in stock there (Make next,
+// mixed; the marker shows; the Priority / Size switch is there per section; a SKU clicked opens Overview with
+// its cell found in that block's grid. Rows are invented: SHS 50x50 1.6 sells in the South with nothing in stock there (Make next,
 // marked No stock) and sits in stock at NPMD with no West sales (Stock stuck, No use).
-const tab = (page, name) => page.getByRole('button', { name, exact: true })
+const screen = (page, name) => page.getByRole('tablist', { name: 'FM / MM / SM screens' }).getByRole('tab', { name, exact: true })
 const SHS_50x50_16 = '1139-13064-10059417'    // DEFAULT_SKUS: MS SHS … 50x50x1.60x6000
 const now = new Date()
 const monthDay = (back, day) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, day)).toISOString().slice(0, 10)
@@ -28,13 +28,11 @@ const showRegion = (page, region) => page.getByRole('group', { name: 'Region', e
 const list = (page, region, name) => block(page, region).getByRole('table', { name: `${name} · ${region}` })
 const openLists = async (page) => {
   await signIn(page, 'admin', { rows })
-  await tab(page, 'Sales').click()
-  await page.getByRole('group', { name: 'Sales view' }).getByRole('button', { name: 'FM / MM / SM', exact: true }).click()
-  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'Make next · Stock stuck', exact: true }).click()
+  await openDashboard(page, 'FM / MM / SM', 'Worklists')
   await expect(block(page, 'South')).toBeVisible()
 }
 
-test('each region block carries its own Make next and Stock stuck, above its grid; Status key does not', async ({ page }) => {
+test('each region block carries its own Make next and Stock stuck, and no grid; Overview does not', async ({ page }) => {
   await openLists(page)
   await expect(page.getByText(/built in a later ticket/)).toHaveCount(0)
   // South: sales and no stock → Make next, Running out · 0 d, marked No stock
@@ -52,18 +50,16 @@ test('each region block carries its own Make next and Stock stuck, above its gri
   await expect(westStuck.locator('[data-no-stock]')).toHaveCount(0)
   await expect(block(page, 'West').getByRole('region', { name: 'Make next · West' })).toContainText('No SKU of West')
   await expect(block(page, 'West').locator('tr[data-sku^="South|"]')).toHaveCount(0)
-  // The list comes before the grid in the block
+  // Worklists is the lists only (ADR-0018): the grid is drawn on Overview
   await showRegion(page, 'South')
-  const before = await block(page, 'South').evaluate(b => {
-    const l = b.querySelector('table[aria-label="Make next · South"]'), g = b.querySelector('table[aria-label="Sales by size and thickness · South"]')
-    return !!(l && g && (l.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING))
-  })
-  expect(before).toBe(true)
-  // No Export on this tab either
+  await expect(block(page, 'South').getByRole('heading', { name: 'Worklists · South' })).toBeVisible()
+  await expect(block(page, 'South').getByRole('table', { name: 'Sales by size and thickness · South' })).toHaveCount(0)
+  // No Export on this screen either
   await expect(page.getByRole('button', { name: /CSV|Export/ })).toHaveCount(0)
-  // Back on Status key the lists are gone
-  await page.getByRole('group', { name: 'FM / MM / SM tabs' }).getByRole('button', { name: 'Status key', exact: true }).click()
+  // On Overview the lists are gone and the grid is back
+  await screen(page, 'Overview').click()
   await expect(page.getByRole('table', { name: 'Make next · South' })).toHaveCount(0)
+  await expect(block(page, 'South').getByRole('table', { name: 'Sales by size and thickness · South' })).toBeVisible()
 })
 
 test('a section heading carries its SKU count and tonnes, and a Priority / Size switch that keeps the rows', async ({ page }) => {
@@ -78,14 +74,15 @@ test('a section heading carries its SKU count and tonnes, and a Priority / Size 
   await expect(westStuck.getByTestId('worklist-section')).toContainText('SHS — 1 SKUs')
 })
 
-test('clicking a SKU finds it in the same block’s grid, switching back to Size × Thickness', async ({ page }) => {
+test('clicking a SKU opens Overview and finds it in the same block’s grid', async ({ page }) => {
   await openLists(page)
   await showRegion(page, 'West')
   const west = block(page, 'West')
-  await west.getByRole('button', { name: 'Production check', exact: true }).click()
   await expect(west.getByRole('table', { name: 'Sales by size and thickness · West' })).toHaveCount(0)
   await list(page, 'West', 'Stock stuck').getByRole('button', { name: 'SHS 50×50 · 1.6 mm' }).click()
-  await expect(west.getByRole('button', { name: 'Size × Thickness', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(screen(page, 'Overview')).toHaveAttribute('aria-selected', 'true')
+  await expect(west).toBeVisible()
+  await expect(west.getByRole('table', { name: 'Sales by size and thickness · West' })).toBeVisible()
   const cell = west.locator('td[data-cell-key="SHS|50x50|1.6"]')
   await expect(cell).toHaveAttribute('data-found', 'true')
   await expect(cell).toBeInViewport()

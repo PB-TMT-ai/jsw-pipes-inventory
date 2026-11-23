@@ -938,6 +938,18 @@ describe('dispatchCoilTrace', () => {
     // without keyOf (raw match) the variant code finds NO production → empty trace:
     expect(dispatchCoilTrace('DESC-A', 2, prod, [])).toEqual([])
   })
+  it('with a plant, draws only that plant\'s production and drains only that plant\'s invoices', () => {
+    const prod = [
+      { deleted: false, skuCode: 'A', plant: 'tapi', dateOfProduction: '2026-06-01', coilAllocations: [{ babyCoilId: 'T1-A', hrCoilId: 'T1', pieces: 4, weight: 4 }] },
+      { deleted: false, skuCode: 'A', plant: 'lepakshi', dateOfProduction: '2026-05-01', coilAllocations: [{ babyCoilId: 'L1-A', hrCoilId: 'L1', pieces: 4, weight: 4 }] },
+    ]
+    // Lepakshi's invoice took 3 pcs; it must not shift Tapi's queue, and Tapi must never reach L1.
+    const existing = [{ deleted: false, bundleEntries: [{ skuCode: 'A', pieces: 3, plant: 'lepakshi' }, { skuCode: 'A', pieces: 1, plant: 'tapi' }] }]
+    expect(dispatchCoilTrace('A', 5, prod, existing, null, undefined, 'tapi'))
+      .toEqual([{ babyCoilId: 'T1-A', hrCoilId: 'T1', pieces: 3, weight: 3 }])   // short by 2: no reaching into Lepakshi
+    expect(dispatchCoilTrace('A', 1, prod, existing, null, undefined, 'lepakshi'))
+      .toEqual([{ babyCoilId: 'L1-A', hrCoilId: 'L1', pieces: 1, weight: 1 }])
+  })
 })
 
 describe('skuAgeing — FIFO stock ageing (first produced, first out)', () => {
@@ -3308,6 +3320,13 @@ describe('APP_TABS', () => {
     expect(keys).not.toContain('tubes')
     expect(keys).not.toContain('bundles')
   })
+
+  it('folds Coil Tracker and Sales into Dashboards (ADR-0018)', () => {
+    const keys = APP_TABS.map(t => t.key)
+    expect(keys).not.toContain('coilTracker')
+    expect(keys).not.toContain('sales')
+    expect(APP_TABS[0].label).toBe('Dashboards')
+  })
 })
 
 describe('accessFor', () => {
@@ -3384,9 +3403,9 @@ describe('accessFor', () => {
     expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain('productionPlanning')
   })
 
-  it('gives a plant user the four viewing tabs', () => {
+  it('gives a plant user the viewing tabs', () => {
     const keys = keysOf(accessFor(hyd))
-    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'coilTracker', 'dispatch', 'sales']))
+    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'dispatch']))
   })
 
   it('offers the manufacturing tabs only to a plant that manufactures', () => {
@@ -3399,7 +3418,7 @@ describe('accessFor', () => {
     expect(plantById(NEVER_MANUFACTURES.id, MASTER_WITH_FICTIONAL_PLANTS)?.manufactures).toBe(false)
     mfg.forEach(k => expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain(k))
     // …but it keeps everything that is not a shop-floor stage.
-    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'orders']))
   })
 
   it('keeps an admin’s manufacturing tabs regardless of the selected plant', () => {
@@ -4481,9 +4500,9 @@ describe('buildDispatchRecords — per-entry fields stay inside bundleEntries', 
 
 describe('buildDispatchRecords — the FIFO coil trace is inherited, never picked', () => {
   const productions = [
-    { id: 'P1', deleted: false, skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-01',
+    { id: 'P1', deleted: false, plant: 'hyderabad', skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-01',
       coilAllocations: [{ babyCoilId: 'BC-1', hrCoilId: 'HR-1', pieces: 60, weight: 0.6 }] },
-    { id: 'P2', deleted: false, skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-05',
+    { id: 'P2', deleted: false, plant: 'hyderabad', skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-05',
       coilAllocations: [{ babyCoilId: 'BC-2', hrCoilId: 'HR-2', pieces: 60, weight: 0.6 }] },
   ]
 
@@ -4813,12 +4832,12 @@ describe('buildInvoiceDispatches — grouping and de-duplication', () => {
 describe('buildInvoiceDispatches — the FIFO coil trace counts what survives the window', () => {
   it('starts after the dispatches outside the window, so September cannot re-allocate August coils', () => {
     const production = {
-      id: 'P1', deleted: false, dateOfProduction: '2026-07-01', skuCode: INV_SKU_A.skuCode, pieces: 150,
+      id: 'P1', deleted: false, plant: 'hyderabad', dateOfProduction: '2026-07-01', skuCode: INV_SKU_A.skuCode, pieces: 150,
       coilAllocations: [{ babyCoilId: 'BC-1', hrCoilId: 'HR-1', pieces: 150, weight: 1.5 }],
     }
     const august = {
       id: 'OLD', deleted: false, dateOfDispatch: '2026-08-02', invoiceNo: 'AUG-1',
-      bundleEntries: [{ invoiceNo: 'AUG-1', skuCode: INV_SKU_A.skuCode, pieces: 100, weight: 1 }],
+      bundleEntries: [{ invoiceNo: 'AUG-1', skuCode: INV_SKU_A.skuCode, pieces: 100, weight: 1, plant: 'hyderabad' }],
     }
     const out = buildZoho([zohoRow({ 'Quantity': 0.5 })], { productions: [production], dispatches: [august] })
     // 150 produced − 100 already dispatched in August = 50 left for this September line.
