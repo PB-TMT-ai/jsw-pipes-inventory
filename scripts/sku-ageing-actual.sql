@@ -2,7 +2,7 @@
 -- SKU AGEING ADJUSTED TO ACTUAL — ages a plant's PHYSICAL stock count, not the book.
 --
 -- Input:  the plant team's stock sheet (plant, size, thickness, qty MT, reserve MT), pasted
---         into the `actual` VALUES list below. Size = 'HxB' for SHS/RHS, the bare NB for CHS.
+--         into the `counted` VALUES list below. Size = 'HxB' for SHS/RHS, the bare NB for CHS.
 -- Rule:   FIFO says the oldest pipes leave first, so what is still on the floor is the NEWEST
 --         production. The counted MT is filled from that plant's production of that size +
 --         thickness, newest day first, back in time until the count is used up. Each filled
@@ -13,12 +13,15 @@
 --         Shown beside the count so the adjustment is visible; it does not feed the ageing.
 -- Naming: the Nippon sheet's '25.4OD' rows are the system's CHS 20 NB (same five thicknesses; last
 --         week's mail carried 20NB x1.6 = 11.8 MT and x2 = 7.4 MT, this sheet 25.4OD x1.6 = 11.839, x2 = 7.389).
+-- No sheet: plants listed in `book_plants` have no count this time; their SYSTEM stock (produced −
+--         invoiced, per key, when > 0) is aged the same way, newest production first. Keys that are
+--         over-invoiced (book < 0) are returned as kind N so the report can name them.
 -- Plant:  production is scoped to the counting plant only (CLAUDE.md: never cross plants).
 -- Run via Supabase MCP execute_sql. Returns one '|'-joined line per row: kind R = report row,
--- kind L = a surviving production layer.
+-- kind L = a surviving production layer, kind N = an over-invoiced key at a book plant.
 -- ═══════════════════════════════════════════════════════════════════════════
 with params as (select date '2026-11-23' as as_of),          -- ← count date
-actual(plant, size_part, thk, qty, reserve, label, free) as (values  -- ← paste the stock sheet here; free = as printed
+counted(plant, size_part, thk, qty, reserve, label, free) as (values  -- ← paste the stock sheet here; free = as printed
   ('tapi','50x50',2,6,0,'50x50x2',6),('tapi','50x50',2.5,4,0,'50x50x2.5',4),('tapi','50x50',4,4,0,'50x50x4',4),
   ('tapi','50x50',5,9,0,'50x50x5',9),('tapi','60x40',2,1,0,'60x40x2',1),('tapi','60x40',4,2,2,'60x40x4',0),
   ('tapi','60x60',4,13,0,'60x60x4',13),('tapi','60x60',5,3,3,'60x60x5',0),('tapi','80x40',2,10,6,'80x40x2',4),
@@ -57,6 +60,8 @@ actual(plant, size_part, thk, qty, reserve, label, free) as (values  -- ← past
   ('hyderabad','80x40',2,7.017,0,'80X40X2',7.017),('hyderabad','80x40',2.5,7.453,0,'80X40X2.5',7.453),
   ('hyderabad','80x40',3,2.070,0,'80X40X3',2.07)
 ),
+book_plants(plant) as (values ('npmd'), ('lepakshi')),     -- ← plants with no count sheet: age system stock
+plants as (select plant from counted union select plant from book_plants),
 sku_dim as (
   select sku_code, coalesce(nullif(nominal_bore,''), height||'x'||breadth) as size_part,
          thickness::numeric as thk
@@ -65,15 +70,28 @@ sku_dim as (
 prod as (   -- one layer per (plant, key, production day)
   select p.plant, sd.size_part, sd.thk, p.date_of_production as dt, sum(p.total_weight)::numeric as mt
   from productions p join sku_dim sd on sd.sku_code = p.sku_code
-  where p.deleted = false and p.tube_count > 0 and p.plant in (select plant from actual)
+  where p.deleted = false and p.tube_count > 0 and p.plant in (select plant from plants)
   group by 1,2,3,4
 ),
 disp as (   -- invoiced MT per (plant, key)
   select e->>'plant' as plant, sd.size_part, sd.thk, sum((e->>'weight')::numeric) as dmt
   from dispatches d cross join lateral jsonb_array_elements(d.bundle_entries) e
   join sku_dim sd on sd.sku_code = e->>'skuCode'
-  where d.deleted = false and e->>'plant' in (select plant from actual)
+  where d.deleted = false and e->>'plant' in (select plant from plants)
   group by 1,2,3
+),
+book as (   -- system stock per (plant, key) = produced − invoiced
+  select coalesce(pr.plant, d.plant) as plant, coalesce(pr.size_part, d.size_part) as size_part,
+         coalesce(pr.thk, d.thk) as thk, coalesce(pr.mt, 0) - coalesce(d.dmt, 0) as mt
+  from (select plant, size_part, thk, sum(mt) as mt from prod group by 1,2,3) pr
+  full join disp d on d.plant = pr.plant and d.size_part = pr.size_part and d.thk = pr.thk
+),
+actual as (
+  select plant, size_part, thk, qty, reserve, label from counted
+  union all
+  select plant, size_part, thk, round(mt, 3), 0,
+         case when size_part like '%x%' then size_part || 'x' else size_part || 'NBX' end || trim_scale(thk)::text
+  from book where plant in (select plant from book_plants) and mt > 0.0005
 ),
 layers as (  -- newest-first: MT produced strictly AFTER this layer
   select a.label, a.plant, pr.dt, pr.mt, a.qty,
@@ -107,4 +125,7 @@ from agg
 union all
 select 'L|'||plant||'|'||label||'|'||dt||'|'||age||'|'||round(mt,3)||'|'||round(smt,3)
 from filled where smt > 0
+union all
+select 'N|'||plant||'|'||size_part||'|'||thk||'|'||round(mt,3)
+from book where plant in (select plant from book_plants) and mt < -0.0005
 order by 1;
