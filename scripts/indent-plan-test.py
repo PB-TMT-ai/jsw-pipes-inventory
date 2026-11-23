@@ -61,7 +61,7 @@ DISP = ['SHS|150x150|4|tapi|SOUTH A PVT LTD|6.68', 'RHS|60x40|2.5|hyderabad|SOUT
         'RHS|60x40|2|hyderabad|SOUTH A PVT LTD|2.505',   # R14: invoiced, never indented; 3 decimals kept exact
         'SHS|72x72|5|tapi|SOUTH B PVT LTD|2.0']        # R12: South B invoiced a size it never indented
 
-def build(tmp, *extra):
+def build(tmp, *extra, disp=None):
     cfg = os.path.join(tmp, 'cfg.json'); json.dump(CONFIG, open(cfg, 'w'))
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Sheet1'
     for i, h in enumerate(['S.No', 'Distributor', 'Material', 'Section', 'Size', 'Thickness', 'Qty in MT'], 2): ws.cell(3, i, h)
@@ -70,7 +70,7 @@ def build(tmp, *extra):
         for i, v in enumerate(row, 3): ws.cell(r, i, v)
     ind = os.path.join(tmp, 'in.xlsx'); wb.save(ind)
     fl = os.path.join(tmp, 'flow.txt'); open(fl, 'w').write(';'.join(FLOW))
-    ds = os.path.join(tmp, 'disp.txt'); open(ds, 'w').write(';'.join(DISP))
+    ds = os.path.join(tmp, 'disp.txt'); open(ds, 'w').write(';'.join(DISP if disp is None else disp))
     out = os.path.join(tmp, 'out.xlsx')
     res = subprocess.run([sys.executable, '-I', SCRIPT, '--indent', ind, '--flow', fl, '--disp', ds, '--out', out,
                           '--asof', 'TEST', '--config', cfg, *extra], capture_output=True, text=True)
@@ -86,9 +86,11 @@ NEW_LAYOUT = [
     ('=B5+1', 'Y', 'West', 'WEST C', 'Black', 'SHS', '150X150', 4, 4, None, '=J7-K7'),
     (None, None, None, None, None, None, None, None, '=SUBTOTAL(9,J4:J7)', '=SUBTOTAL(9,K4:K7)', '=SUBTOTAL(9,L4:L7)'),
 ]
-def build_new(tmp, rows, ok=True):
+def build_new(tmp, rows, ok=True, tab='Sheet1'):
     cfg = os.path.join(tmp, 'cfg.json'); json.dump(CONFIG, open(cfg, 'w'))
-    wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Sheet1'
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = tab
+    if tab != 'Sheet1':                            # Nov-26: an empty Sheet1 and a pivot sit beside the indent tab
+        wb.create_sheet('Sheet1', 0); pv = wb.create_sheet('Sheet2', 1); pv['A3'], pv['B3'] = 'Distributor', 'Sum of Indent Qty in MT'
     for i, h in enumerate(['S.No', 'SM', 'Region', 'Distributor', 'Material', 'Section', 'Size', 'Thickness',
                            'Indent Qty in MT', 'Billed Qty', 'Pending Qty'], 2): ws.cell(3, i, h)
     for r, row in enumerate(rows, 4):
@@ -195,6 +197,22 @@ def main():
         e = [round(sum(l['load'] for l in L(dist=d_, size='80x80', thk=5)), 2) for d_ in ('SOUTH A', 'SOUTH B', 'SOUTH D')]
         check('R7 share just under 1 MT is dropped', e == [1.92, 2.56, 0],
               f'4.494 MT for A 3 / B 4 / D 2: D 0.9987 dropped -> A 1.92, B 2.56; got {e}')
+        # R8: a truck's total is the exact sum of its loads (Nov-26: stored rounded to 0.1, 1.17 read 1.2).
+        tr_ = list(wb['Truck Plan'].iter_rows(values_only=True)); h_ = next(i for i, r_ in enumerate(tr_) if r_[0] == 'Truck' and i > 3)
+        tots, cur_ = {}, None
+        for r_ in tr_[h_ + 1:]:
+            if not (r_[0] and str(r_[0]).startswith('T')): break
+            if r_[10] is not None: cur_ = r_[0].split()[0]; tots[cur_] = [r_[10], 0.0]
+            tots[cur_][1] += r_[9]
+        bad_ = {t: v for t, v in tots.items() if abs(v[0] - round(v[1], 2)) > 1e-9}
+        check('R8 truck total = exact sum of its loads', tots and not bad_, f'stored vs summed per truck; off: {bad_}')
+        # R13: Nov-26 — every VVN invoice came in as 'V V N STEELS  P  LTD' (double spaces) and the build
+        # matched only the exact spelling, so 212 MT read as nothing invoiced. Spacing must not matter.
+        snap = lambda w: {t: [list(r_) for r_ in w[t].iter_rows(values_only=True)] for t in w.sheetnames}
+        base = snap(wb)
+        sw_, _ = build(tmp, disp=[d_.replace('SOUTH D PVT LTD', 'SOUTH  D   PVT LTD ') for d_ in DISP])
+        check('R13 invoice customer spacing ignored', snap(sw_) == base,
+              "South D's 4.05 MT invoiced as 'SOUTH  D   PVT LTD ' builds the same workbook as the exact spelling")
         nw, nout = build_new(tmp, NEW_LAYOUT)
         n1 = nw['Sheet1']
         check('R14 stock columns after the table', [n1.cell(3, c).value for c in range(13, 18)] ==
@@ -206,15 +224,29 @@ def main():
         check('R14 Billed = invoices', n1['K4'].value == 0 and n1['K6'].value == 6.68,
               f'25x25 typed 3 but nothing invoiced -> 0; the 150x150 row -> 6.68; got {n1["K4"].value} / {n1["K6"].value}')
         check('R14 invoiced-not-indented row added under its distributor',
-              [n1.cell(7, c).value for c in range(2, 13)] == ['=B5+1', 'X', 'South', 'SOUTH A', 'Black', 'RHS', '60x40', 2, 0, 2.505, '=J7-K7'],
+              [n1.cell(7, c).value for c in range(2, 13)] == ['=B5+1', 'X', 'South', 'SOUTH A', 'Black', 'RHS', '60x40', 2, 0, 2.505, '=N(J7)-N(K7)'],
               f'row 7 = South A RHS 60x40 2: Indent 0, Billed 2.505 (exact, not 2.5 or 2.51 — Oct-26 the rounded cells summed 0.045 MT short), S.No and Pending formulas; got {[n1.cell(7, c).value for c in range(2, 13)]}')
-        check('R14 formulas follow the moved rows', n1['B8'].value == '=B7+1' and n1['L8'].value == '=J8-K8' and n1['J9'].value == '=SUBTOTAL(9,J4:J8)',
-              f'West C now row 8 (=B7+1, =J8-K8); SUBTOTAL covers J4:J8; got {n1["B8"].value} {n1["L8"].value} {n1["J9"].value}')
+        check('R14 formulas follow the moved rows', n1['B8'].value == '=B7+1' and n1['L8'].value == '=N(J8)-N(K8)' and n1['J9'].value == '=SUBTOTAL(9,J4:J8)',
+              f'West C now row 8 (=B7+1, =N(J8)-N(K8)); SUBTOTAL covers J4:J8; got {n1["B8"].value} {n1["L8"].value} {n1["J9"].value}')
+        check('R14 Pending reads a text Indent as 0', all(str(n1.cell(r, 12).value).startswith('=N(J') for r in range(4, 9)),
+              f'Nov-26: 148 Indent cells held a non-breaking space and =J-K gave #VALUE!; got {[n1.cell(r, 12).value for r in range(4, 9)]}')
         check('R15 row without a distributor joins the row above', 'Row 6: no distributor — read as South A' in nout and n1['P6'].value is not None,
               f'row 6 (150x150 4, billed 6.68) is South A SHS 150x150 and gets stock columns; stdout: {nout.splitlines()[-3:]}')
         ck = [r_[0] for r_ in nw['Checks'].iter_rows(values_only=True) if r_[0]]
         check('R14 changes listed on Checks', any(str(v).startswith('5. Billed') for v in ck) and any(str(v).startswith('6. Rows added') for v in ck),
               'Checks lists every changed Billed value and every added row')
+        tw, _ = build_new(tmp, NEW_LAYOUT, tab="Nov'26 Indent")
+        t1 = tw["Nov'26 Indent"]
+        check('R17 indent tab found by its headers', t1['K6'].value == 6.68 and t1['M3'].value == 'Opening Inventory (MT)'
+              and tw['Sheet1'].max_row == 1 and tw['Sheet2']['B3'].value == 'Sum of Indent Qty in MT',
+              f"indent on \"Nov'26 Indent\" beside an empty Sheet1 and a pivot: the indent tab is filled, the others untouched; got K6={t1['K6'].value}, M3={t1['M3'].value}")
+        ov = [list(r_) for r_ in NEW_LAYOUT[:4]] + [['=#REF!+1', 'Y', 'West', 'WEST C', 'Black', 'SHS', '150X150', 5, 7, '=SUBTOTAL(9,K4:K7)', '=SUBTOTAL(9,L4:L7)'],
+                                                   ['=B8+1', 'Y', 'West', 'WEST C', 'Black', 'RHS', '100X50', 2, 9, None, '=J9-K9']]
+        ow, oout = build_new(tmp, ov); o1 = ow['Sheet1']
+        got_ = [(o1.cell(r_, 5).value, o1.cell(r_, 8).value, o1.cell(r_, 9).value, o1.cell(r_, 10).value, o1.cell(r_, 12).value) for r_ in (9, 10)]
+        check('R18 data typed over an old footer is still data', got_ == [('WEST C', '150X150', 5, 7, '=N(J9)-N(K9)'), ('WEST C', '100X50', 2, 9, '=N(J10)-N(K10)')]
+              and o1['B9'].value == '=B8+1' and o1['P10'].value is not None,
+              f"a row with a distributor and thickness over SUBTOTAL formulas, and the row after it, are read and get stock columns; got {got_}, B9={o1['B9'].value}")
         bad = [list(r_) for r_ in NEW_LAYOUT]; bad[3][2] = 'South'
         res = build_new(tmp, bad, ok=False)
         check('R14 region mismatch stops the run', res.returncode != 0 and 'ask the user' in (res.stdout + res.stderr),

@@ -14,7 +14,7 @@
 
 -- ── 1. FLOW (--flow): per plant + size: produced/dispatched before the month, and in the month ──
 -- Format: pt|size|thk|plant|prodBefore|dispBefore|prodMonth|dispMonth ; …
-with params as (select date '2026-10-01' as month_start),            -- ← first day of the month
+with params as (select date '2026-11-01' as month_start),            -- ← first day of the month
 sku as (
   select sku_code, max(product_type) pt,
          max(coalesce(nullif(nominal_bore,''), trim(to_char(height,'FM999990.##'))||'x'||trim(to_char(breadth,'FM999990.##')))) size_part,
@@ -46,13 +46,19 @@ with sku as (
   select sku_code, max(product_type) pt,
          max(coalesce(nullif(nominal_bore,''), trim(to_char(height,'FM999990.##'))||'x'||trim(to_char(breadth,'FM999990.##')))) size_part,
          max(thickness::numeric) thk from skus group by sku_code),
-g as (select s.pt, s.size_part, s.thk, e->>'plant' plant, e->>'customer' cust, round(sum((e->>'weight')::numeric),3) mt
-      from dispatches dd cross join lateral jsonb_array_elements(dd.bundle_entries) e
-      join sku s on s.sku_code = e->>'skuCode'
-      where not dd.deleted and dd.date_of_dispatch >= date '2026-10-01'                -- ← first day of the month
-        and e->>'customer' in ('SHIVAM PRIME STEELS PRIVATE LIMITED','SST STEEL CORPORATION','V V N STEELS P LTD',
-          'KHAN STEEL CENTRE PRIVATE LIMITED','SHUBH M L SHAH & SONS STEEL PRIVATE LIMITED',
-          'ARIHANT STEEL POINT PRIVATE LIMITED','VORA & CO','PROVACK STRUCTURAL STEELS PRIVATE LIMITED','MAHENDRA ISPAT')
+-- Customer spacing/case collapsed (R13): Nov-26 every VVN invoice read 'V V N STEELS  P  LTD'.
+c as (select regexp_replace(upper(trim(e->>'customer')), '\s+', ' ', 'g') cust, e, dd.date_of_dispatch, dd.deleted
+      from dispatches dd cross join lateral jsonb_array_elements(dd.bundle_entries) e),
+g as (select s.pt, s.size_part, s.thk, e->>'plant' plant, c.cust, round(sum((e->>'weight')::numeric),3) mt
+      from c join sku s on s.sku_code = c.e->>'skuCode'
+      where not c.deleted and c.date_of_dispatch >= date '2026-11-01'                  -- ← first day of the month
+        and c.cust in ('AMIT PIPE & STEEL PRIVATE LIMITED','ARIHANT STEEL AGENCY',
+          'ARIHANT STEEL POINT PRIVATE LIMITED','HISSARIA STEEL','KESHAV STEEL TRADERS',
+          'KHAN STEEL CENTRE PRIVATE LIMITED','KISAN KIRAN ENTERPRISE PRIVATE LIMITED','KISAN PIPE AND STEEL',
+          'MAHENDRA ISPAT','NEW MAHARASHTRA STEEL AND TIMBERS','PROVACK STRUCTURAL STEELS PRIVATE LIMITED',
+          'SHIVAM PRIME STEELS PRIVATE LIMITED','SHRI LAKSHMI STEEL SUPPLIERS',
+          'SHUBH M L SHAH & SONS STEEL PRIVATE LIMITED','SRI SHAKTHI STEEL & PIPE','SST STEEL CORPORATION',
+          'V V N STEELS P LTD','VIKAS PIPES','VORA & CO')
       group by 1,2,3,4,5)
 select count(*) n, round(sum(mt),2) tot,
        string_agg(concat_ws('|',pt,size_part,thk::text,plant,cust,mt), ';' order by cust,plant,pt,size_part,thk) s

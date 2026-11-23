@@ -22,7 +22,7 @@
 # Rules (see blueprints/indent-truck-plan.md): stock = produced - dispatched (weight from the SKU
 # master, never density); CRFH is read as Black; 3 mm and 3.2 mm are one size; obvious typos in the
 # indent are corrected for the maths only and listed on stdout; loads are whole lines >= 1 MT, one
-# plant per truck; short stock is shared pro rata to qty left within a region.
+# plant per truck; short stock is shared pro rata to qty left, plant by plant (fuller first) within a region (R7).
 
 import sys, os, re, copy, json, math, argparse, openpyxl
 from openpyxl.utils import get_column_letter as L
@@ -49,7 +49,7 @@ REGION_PLANTS = cfg['regionPlants']
 PNAME = cfg['plantNames']
 SIZE_FIXES = {k.upper(): v.upper() for k, v in cfg.get('sizeFixes', {}).items()}
 nm = lambda s: re.sub(r'\s+', ' ', str(s)).strip().upper()     # 'KISAN PIPE &  STEEL ' = 'KISAN PIPE & STEEL'
-DIST = {nm(k): (v['customer'], v['region']) for k, v in cfg['distributors'].items()}
+DIST = {nm(k): (nm(v['customer']), v['region']) for k, v in cfg['distributors'].items()}
 T = lambda t: 3.0 if round(float(t), 2) == 3.2 else round(float(t), 2)   # 3 and 3.2 are one size
 order = {'CHS': 0, 'SHS': 1, 'RHS': 2}
 dims = lambda size: [float(v) for v in size.split('x')]
@@ -85,7 +85,8 @@ for rec in open(flow_txt).read().strip().split(';'):
 cdisp = {}                                         # (customer, plant, key) -> Oct MT
 for rec in open(disp_txt).read().strip().split(';'):
     pt, size, thk, plant, cust, mt = rec.split('|')
-    k = (cust, plant, (pt, size, T(thk))); cdisp[k] = cdisp.get(k, 0) + float(mt)
+    # Spacing is not identity (R13): Nov-26 VVN was invoiced as 'V V N STEELS  P  LTD', 212 MT read as 0.
+    k = (nm(cust), plant, (pt, size, T(thk))); cdisp[k] = cdisp.get(k, 0) + float(mt)
 
 def plant_open(p, key):                            # raw balance before the month; may be negative
     f = flow.get((p, key), (0, 0, 0, 0)); return f[0] - f[1]
@@ -111,8 +112,16 @@ def dist_disp(dist, key):                          # Oct dispatch to this distri
 # ── Sheet1: the indent's columns are found by their header (row 3), so both layouts read: the original
 #    S.No | Distributor | Material | Section | Size | Thickness | Qty in MT, and the Oct-26 one that adds
 #    SM, Region, Billed Qty and Pending Qty around them (rule R14) ──
+def indent_sheet(wb):
+    # The indent tab is the one whose row 3 carries Distributor and Thickness headers — found, not assumed.
+    # Up to Oct-26 it was always 'Sheet1'; the Nov-26 file holds it on "Nov'26 Indent" next to an empty
+    # Sheet1 and a pivot (Sheet2). Exactly one tab must qualify, or the run stops.
+    hit = [w for w in wb.worksheets if {'DISTRIBUTOR', 'THICKNESS'} <= {re.sub(r'\s+', ' ', str(w.cell(3, c).value)).strip().upper()
+                                                               for c in range(1, w.max_column + 1) if isinstance(w.cell(3, c).value, str)}]
+    if len(hit) != 1: raise SystemExit(f'need exactly one tab with Distributor and Thickness headers in row 3; found {[w.title for w in hit]}')
+    return hit[0]
 wb = openpyxl.load_workbook(src)
-ws = wb['Sheet1']
+ws = indent_sheet(wb)
 H = {nm(ws.cell(3, c).value): c for c in range(1, ws.max_column + 1) if isinstance(ws.cell(3, c).value, str)}
 def col(pred, what, need=True):
     hits = [c for h, c in H.items() if pred(h)]
@@ -137,6 +146,16 @@ if ws.max_column > LASTC:
     ws.move_range(f'{L(LASTC + 1)}1:{L(ws.max_column)}{ws.max_row}', cols=OFF)
     for m in right: ws.merge_cells(start_row=m.min_row, end_row=m.max_row, start_column=m.min_col + OFF, end_column=m.max_col + OFF)
     for c, w in widths_.items(): ws.column_dimensions[L(c + OFF)].width = w
+# Pivot tables are kept as the values the user last saw, not as live pivots (R17). Every pivot in these
+# files reads a fixed range of the indent tab, which this build changes (rows added, stock columns), and
+# the recalculation step refreshes every pivot from it. Nov-26: moved pivots still came back relabelled,
+# and Sheet2 (refreshed 6 Nov, 1,900 MT, the user's "Expected date" notes beside it) came back 2,088
+# with Hissaria "(empty)" and the notes beside the wrong distributors. Even the untouched file reads
+# 2,150 after a recalculation. The cells already hold the last-refreshed values, so dropping the pivot
+# definition keeps them exactly; the user's own file keeps its live pivots.
+frozen = []
+for w in wb.worksheets:
+    if w._pivots: frozen.append((w.title, len(w._pivots))); w._pivots = []
 for i, t in enumerate(NEW):
     c = ws.cell(3, NC + i, t); c._style = copy.copy(hdr._style)
     c.alignment = copy.copy(c.alignment); c.alignment = Alignment(horizontal='left', vertical=c.alignment.vertical, wrap_text=c.alignment.wrap_text)
@@ -144,8 +163,12 @@ for i, t in enumerate(NEW):
 
 # Rows: a row carrying a thickness but no distributor (billing someone typed under the row above, Oct-26)
 # belongs to the distributor above it, and takes its section and size when those are blank too (rule R15).
+# The footer is a SUBTOTAL row with no distributor and no thickness. A row that carries both is data even
+# when old total formulas sit in it: the Nov-26 file typed Keshav's first row over October's footer (row 758)
+# and went on for 564 more rows — stopping there read 546 MT of 2,896 (rule R18, user 16 Nov).
 footer = next((r for r in range(4, ws.max_row + 1)
-               if any(isinstance(ws.cell(r, c).value, str) and 'SUBTOTAL(' in ws.cell(r, c).value.upper() for c in range(1, LASTC + 1))),
+               if any(isinstance(ws.cell(r, c).value, str) and 'SUBTOTAL(' in ws.cell(r, c).value.upper() for c in range(1, LASTC + 1))
+               and ws.cell(r, C_DIST).value is None and ws.cell(r, C_THK).value is None),
               ws.max_row + 1)
 recs = []                                          # one per data row: [row, dist, mat, sec, size, thk, qty, key]
 prev = None
@@ -217,7 +240,8 @@ if C_BILL:
                 ws.cell(r, C_SNO).value = f'={L(C_SNO)}{lastno}+1' if lastno else 1
             if ws.cell(r, C_SNO).value is not None: lastno = r
     if C_PEND:
-        for rc in recs: ws.cell(rc[0], C_PEND).value = f'={L(C_QTY)}{rc[0]}-{L(C_BILL)}{rc[0]}'
+        # N(): Nov-26 indent had 148 Indent cells holding a non-breaking space -> plain J-K gave #VALUE!
+        for rc in recs: ws.cell(rc[0], C_PEND).value = f'=N({L(C_QTY)}{rc[0]})-N({L(C_BILL)}{rc[0]})'
     for r in range(nfooter, nfooter + (max(snap) + 1 - footer)):
         for c in range(1, LASTC + 1):
             v_ = ws.cell(r, c).value
@@ -363,7 +387,7 @@ for reg in regions:
     for c in [1, 2] + [s + k for s in starts for k in range(n)]: style(x.cell(r, c), True, gray, NUM, mid)
     r += 3
 x.cell(r - 1, 1, 'All figures in MT, whole numbers; blank = 0, red = negative. CRFH counted as Black; 3 mm includes 3.2 mm.').font = Font(name=FONT, italic=True, size=9)
-x.cell(r, 1, f"Dispatch = each distributor's Oct invoices (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
+x.cell(r, 1, f"Dispatch = each distributor's invoices 1–{DISP_ASOF} (any plant) up to its own indent. Qty Left = Indent − Dispatch = still owed, never below 0. Inventory = ALL closing stock of that region's plants on {ASOF}, each plant floored at 0.").font = Font(name=FONT, italic=True, size=9)
 x.freeze_panes = 'C1'; x.sheet_view.zoomScale = 90
 
 # ── --split: a separate, simple workbook of what is still owed (Qty Left = Indent − Dispatch, R12), split by
@@ -508,12 +532,12 @@ for tid, rows_ in trucks.items():
                 indent.get((dist, k), 0), round(dist_disp(dist, k), 3), f'=G{r}-H{r}', mt]
         for c, v in enumerate(vals, 1): put(r, c, v, c == 1, fill, '0.0' if c >= 7 else None, mid if c != 2 else None)
         put(r, 11, None, fill=fill); tp.row_dimensions[r].height = 15; r += 1
-    put(start, 11, round(tot, 1), True, fill, '0.0', mid)
+    put(start, 11, round(tot, 2), True, fill, '0.0', mid)
     if r - start > 1: tp.merge_cells(start_row=start, start_column=11, end_row=r - 1, end_column=11)
 r += 1
-for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = Oct invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
+for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = this month's invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
              'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
-             'Short stock shared by distributors of a region is split in proportion to qty left; a share under 1 MT is dropped and the rest re-split pro rata. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
+             'Short stock is split plant by plant (fuller plant first) among the distributors of the region, in proportion to qty left; a share under 1 MT is dropped and the rest re-split pro rata. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
     tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1
 for c, w in zip('ABCDEFGHIJK', (11, 24, 11, 10, 10, 10, 10, 11, 11, 10, 13)): tp.column_dimensions[c].width = w
 tp.freeze_panes = 'A4'
@@ -565,6 +589,7 @@ for c_, w in zip('ABCDEFG', (40, 9, 10, 6, 12, 12, 13)): ck.column_dimensions[c_
 wb.save(out)
 
 # ── checks ──
+print('pivots kept as values', frozen)
 print('distributors', [(d, DIST[d][1]) for d in dists])
 print('indent', round(sum(indent.values()), 2), {g_: round(sum(q for (d, k), q in indent.items() if DIST[d][1] == g_), 2) for g_ in regions})
 print('trucks', len(trucks), 'planned', round(sum(x_[4] for x_ in plan), 2), 'alloc', round(sum(alloc.values()), 2))

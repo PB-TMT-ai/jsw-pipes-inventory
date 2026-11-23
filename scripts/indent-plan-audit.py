@@ -38,7 +38,15 @@ def table(ws):
         if s_ is None: continue
         out_.append((r, NM(d), key(s_, z, g('t')), g('q') if isinstance(g('q'), (int, float)) else 0, g('b')))
     return C, out_
-iw = openpyxl.load_workbook(indent_f)['Sheet1']; _, in_rows = table(iw)
+def indent_sheet(wb):
+    # The indent tab is the one whose row 3 carries Distributor and Thickness headers — found, not assumed.
+    # Up to Oct-26 it was always 'Sheet1'; the Nov-26 file holds it on "Nov'26 Indent" next to an empty
+    # Sheet1 and a pivot (Sheet2). Exactly one tab must qualify, or the run stops.
+    hit = [w for w in wb.worksheets if {'DISTRIBUTOR', 'THICKNESS'} <= {re.sub(r'\s+', ' ', str(w.cell(3, c).value)).strip().upper()
+                                                               for c in range(1, w.max_column + 1) if isinstance(w.cell(3, c).value, str)}]
+    if len(hit) != 1: raise SystemExit(f'need exactly one tab with Distributor and Thickness headers in row 3; found {[w.title for w in hit]}')
+    return hit[0]
+iw = indent_sheet(openpyxl.load_workbook(indent_f)); _, in_rows = table(iw)
 # dispatch to customer, all plants
 disp = collections.Counter()
 for rec in open(disp_f).read().strip().split(';'):
@@ -51,7 +59,7 @@ for rec in open(flow_f).read().strip().split(';'):
 out = openpyxl.load_workbook(out_f, data_only=True)
 errs = []
 # 1. Sheet1 stock columns = region flow
-s1 = out['Sheet1']; C, rows = table(s1)
+s1 = indent_sheet(out); C, rows = table(s1)
 ind = collections.Counter()
 for r, d, k, q, b in rows: ind[(d, k)] += q
 # the user's rows are all still there, in order, with the same indent; anything extra is an added row (Indent 0)
@@ -78,6 +86,8 @@ for r, d, k, q, b in rows:
     want = (sum(max(0.0, x[0] - x[1]) for x in F), sum(x[2] for x in F), sum(x[3] for x in F),
             sum(max(0.0, x[0] - x[1] + x[2] - x[3]) for x in F))           # each plant floored at 0 (rule R6)
     got = tuple(s1.cell(r, c).value for c in range(OC, OC + 4))
+    if any(g is not None and not isinstance(g, (int, float)) for g in got):   # a pivot or note redrawn over them
+        errs.append(f'Sheet1 row {r}: stock columns overwritten with {got}'); continue
     if any(abs((g or 0) - w) > 0.02 for g, w in zip(got, want)): errs.append(f'Sheet1 row {r}: want {want} got {got}')
     if s1.cell(r, RC).value is not None and NM(s1.cell(r, RC).value) != NM(reg): errs.append(f'Sheet1 row {r} region')
 # 2. Truck Plan detail rows
@@ -113,7 +123,7 @@ over = {t: round(v, 2) for t, v in tot.items() if v > CAP + 0.05}
 if over: errs.append(f'trucks over {CAP:g} MT: {over}')
 # 4. per-distributor dispatch totals (all plants) vs bundle
 for d, v in dmap.items():
-    print(f"  {d:24s} {v['region']:5s} indent {sum(q for (dd, k), q in ind.items() if dd == d):7.1f}  Oct dispatch (all plants) {sum(m for (c, k), m in disp.items() if c == v['customer']):7.2f}")
+    print(f"  {d:24s} {v['region']:5s} indent {sum(q for (dd, k), q in ind.items() if dd == d):7.1f}  month dispatch (all plants) {sum(m for (c, k), m in disp.items() if c == v['customer']):7.2f}")
 print('VVN 150x150 lines in truck plan:', [(r[0], r[4], r[5], r[6], r[7], r[8], r[9]) for r in tr[hdr+1:hdr+1+lines] if 'V V N' in str(r[1]) and '150x150' in str(r[4])])
 print('VVN 150x150 independent: ', {k: (ind[('V V N STEELS P LTD', k)], round(disp[('V V N STEELS P LTD', k)], 2)) for k in [('SHS', '150x150', 4.0), ('SHS', '150x150', 5.0), ('SHS', '150x150', 3.0), ('SHS', '150x150', 6.0)]})
 print(f'checked: {len(rows)} Sheet1 rows, {lines} truck lines, {len(tot)} trucks')
