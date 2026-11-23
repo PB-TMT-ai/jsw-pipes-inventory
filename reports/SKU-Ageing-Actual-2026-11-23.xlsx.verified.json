@@ -1,8 +1,8 @@
 {
  "file": "reports/SKU-Ageing-Actual-2026-11-23.xlsx",
- "sha256": "78997a4f6f8f1554e05a0d9141af1f7711daa8088a1cb2e18628f2d2560aa1e3",
- "verdict": "FAIL",
+ "sha256": "dac881131238d5a9e2f7b8d7a88537e3ce80ba70fefc869afdf58f0c7f7dcfae",
+ "verdict": "PASS",
  "by": "data-verifier",
- "summary": "1589 figures recomputed from live DB + count images; all ageing/book/FIFO/totals match; FAIL on transcription: Tapi 80x80x4 Free 0.3 vs sheet 0 (and Tapi Free total 594.3 vs sheet 595, not noted)",
- "at": "2026-11-23T07:40:05+00:00"
+ "summary": "Re-check: 1629 figures (both tabs, totals, Summary, all 120 FIFO layers) recomputed from live DB + count images; Free as printed (Tapi 594.0); 25.4OD rows aged as Hyderabad CHS 20 NB per rule; data current (last entry 05:06 23-Nov)",
+ "at": "2026-11-23T07:51:50+00:00"
 }

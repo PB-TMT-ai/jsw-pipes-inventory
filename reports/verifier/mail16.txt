@@ -1,0 +1,88 @@
+Ageing stock 16-Nov-2026
+Dear Team,
+We have reconciled the system with each plant's FG stock statement of 16-Nov from all four plants, so the figures below match the stock physically at the plants.
+As of 16-Nov-2026, 1173.0 MT of finished stock is more than 30 days old. 249.1 MT of it is over 60 days old: 154.2 MT at Hyderabad and 94.8 MT at NPMD. Of the 1037.5 MT that was over 30 days on 11-Nov, only 63.0 MT (6%) has been invoiced since.
+The rise from last week's 1037.5 MT is stock that crossed 30 days this week, while little of the aged stock was invoiced.
+1. Progress since last week's mail (MT)
+Plant | Over 30 days on 11-Nov (as sent) | Invoiced from it since (system) | Still on hand | Over 30 days today | 
+Hyderabad | 214.4 | 8.2 (4%) | 206.2 | 265.9 | 
+NPMD | 395.4 | 3.8 (1%) | 391.6 | 458.9 | 
+Tapi | 277.5 | 27.7 (10%) | 249.8 | 330.3 | 
+Lepakshi | 150.3 | 23.4 (16%) | 126.9 | 117.9 | 
+Total | 1037.5 | 63.0 (6%) | 974.5 | 1173.0 | 
+"Over 30 days on 11-Nov" is last week's figure as sent; "Invoiced from it since" is the system's invoices of those SKUs; "Still on hand" is the difference. "Over 30 days today" is reconciled with the plants' FG statements and includes stock that crossed 30 days this week. Invoices are counted up to 15-Nov; the system has no NPMD invoices dated 1–14 Nov and no Hyderabad invoices dated 6–11 Nov.
+2. Stock over 30 days today, by plant
+Plant | Sells to | Over 30 days (MT) | 31–60 d | 61–90 d | 90+ d | Action | 
+Hyderabad | South | 265.9 | 111.7 | 25.6 | 128.6 | Push needed: 154 MT over 60 days, oldest 207 days; only 8.2 MT of its aged stock invoiced this week. CHS 50 NB x 2, 80 NB x 2, 80 NB x 1.6 and 65 NB x 2.5 have had nothing invoiced since 26-Oct | 
+NPMD | West | 458.9 | 364.0 | 94.8 | – | 95 MT now over 60 days: RHS 80x40 x 2 (48 MT, 62 days), RHS 80x40 x 3 (30 MT, 66 days), RHS 60x40 x 3 (17 MT, 70 days). No NPMD invoices dated 1-14 Nov are in the system | 
+Tapi | West | 330.3 | 330.3 | – | – | Largest: SHS 150x150 x 2.5 (50 MT), RHS 80x40 x 4 (43 MT, nothing invoiced this week) and SHS 150x150 x 3 (40 MT, nothing invoiced in two weeks); oldest 53 days, goes over 60 days on 24-Nov | 
+Lepakshi | South | 117.9 | 117.9 | – | – | Largest: RHS 122x61 x 4 (29 MT) and SHS 72x72 x 5 (28 MT, 8.3 MT invoiced this week); oldest 55 days, goes over 60 days on 22-Nov | 
+Total | | 1173.0 | 923.9 | 120.5 | 128.6 | | 
+3. SKUs to push
+Priority is set by the age of the oldest batch. The age columns split each SKU's tonnage by bracket. Sold since 11-Nov = MT of that SKU's aged stock invoiced since last week's mail (system invoices). 0.0 means nothing moved, and new means it was not in last week's list.
+Plant (sells to) | SKU | Over 30 days (MT) | 31–60 d | 61–90 d | 90+ d | Oldest (days) | Sold since 11-Nov | 
+PRIORITY 1: oldest batch over 90 days | 
+Hyderabad (South) | CHS 50 NB x 2 | 27.3 | – | – | 27.3 | 146 | 0.0 | 
+Hyderabad (South) | CHS 80 NB x 2.5 | 23.6 | – | – | 23.6 | 132 | 0.0 | 
+Hyderabad (South) | CHS 32 NB x 2.5 | 19.4 | 4.2 | – | 15.3 | 129 | 0.0 | 
+Hyderabad (South) | CHS 80 NB x 2 | 17.1 | – | – | 17.1 | 132 | 0.0 | 
+Hyderabad (South) | CHS 80 NB x 1.6 | 15.1 | – | – | 15.1 | 131 | 0.0 | 
+Hyderabad (South) | CHS 20 NB x 1.6 | 11.8 | 8.2 | – | 3.6 | 117 | 0.0 | 
+Hyderabad (South) | RHS 75x25 x 3 | 10.5 | – | – | 10.5 | 207 | 0.0 | 
+Hyderabad (South) | CHS 65 NB x 2.5 | 9.1 | – | – | 9.1 | 141 | 0.0 | 
+Hyderabad (South) | + 3 smaller SKUs (under 5 MT each, see attachment) | 9.8 | 2.7 | – | 7.0 | 154 | 0.0 | 
+PRIORITY 2: oldest batch 61–90 days | 
+Hyderabad (South) | RHS 60x40 x 2.5 | 11.7 | – | 11.7 | – | 66 | 0.0 | 
+Hyderabad (South) | SHS 100x100 x 2.5 | 5.8 | – | 5.8 | – | 84 | new | 
+Hyderabad (South) | + 3 smaller SKUs (under 5 MT each, see attachment) | 10.7 | 2.5 | 8.1 | – | 89 | 3.0 | 
+NPMD (West) | RHS 80x40 x 2 | 47.8 | – | 47.8 | – | 62 | 0.0 | 
+NPMD (West) | RHS 80x40 x 3 | 29.6 | – | 29.6 | – | 66 | 0.0 | 
+NPMD (West) | RHS 60x40 x 3 | 17.4 | – | 17.4 | – | 70 | 0.0 | 
+PRIORITY 3: 31–60 days, move it before it ages further | 
+Hyderabad (South) | CHS 40 NB x 2 | 16.6 | 16.6 | – | – | 56 | 3.1 | 
+Hyderabad (South) | SHS 38x38 x 3 | 13.2 | 13.2 | – | – | 58 | 0.0 | 
+Hyderabad (South) | RHS 60x40 x 3 | 12.2 | 12.2 | – | – | 37 | 0.0 | 
+Hyderabad (South) | RHS 40x20 x 3 | 11.0 | 11.0 | – | – | 33 | new | 
+Hyderabad (South) | CHS 20 NB x 2 | 7.4 | 7.4 | – | – | 59 | 0.0 | 
+Hyderabad (South) | RHS 100x50 x 4 | 7.2 | 7.2 | – | – | 31 | new | 
+Hyderabad (South) | RHS 80x40 x 2 | 7.0 | 7.0 | – | – | 33 | new | 
+Hyderabad (South) | SHS 50x50 x 1.6 | 5.7 | 5.7 | – | – | 40 | 0.0 | 
+Hyderabad (South) | CHS 20 NB x 2.5 | 5.5 | 5.5 | – | – | 34 | new | 
+Hyderabad (South) | + 3 smaller SKUs (under 5 MT each, see attachment) | 8.1 | 8.1 | – | – | 51 | 0.0 | 
+NPMD (West) | RHS 60x40 x 1.6 | 94.0 | 94.0 | – | – | 38 | 0.0 | 
+NPMD (West) | SHS 50x50 x 2.5 | 52.6 | 52.6 | – | – | 48 | 3.8 | 
+NPMD (West) | RHS 60x40 x 2.5 | 42.0 | 42.0 | – | – | 42 | 0.0 | 
+NPMD (West) | SHS 50x50 x 2 | 40.3 | 40.3 | – | – | 49 | 0.0 | 
+NPMD (West) | SHS 50x50 x 1.6 | 37.9 | 37.9 | – | – | 45 | 0.0 | 
+NPMD (West) | RHS 60x40 x 2 | 35.6 | 35.6 | – | – | 40 | 0.0 | 
+NPMD (West) | RHS 96x48 x 2 | 32.0 | 32.0 | – | – | 33 | new | 
+NPMD (West) | RHS 96x48 x 1.6 | 14.0 | 14.0 | – | – | 31 | new | 
+NPMD (West) | RHS 96x48 x 3 | 13.4 | 13.4 | – | – | 34 | new | 
+NPMD (West) | + 1 smaller SKU (under 5 MT, see attachment) | 2.1 | 2.1 | – | – | 54 | 0.0 | 
+Tapi (West) | SHS 150x150 x 2.5 | 50.0 | 50.0 | – | – | 48 | 4.3 | 
+Tapi (West) | RHS 80x40 x 4 | 43.0 | 43.0 | – | – | 36 | 0.0 | 
+Tapi (West) | RHS 96x48 x 2.5 | 41.0 | 41.0 | – | – | 32 | new | 
+Tapi (West) | SHS 150x150 x 3 | 40.0 | 40.0 | – | – | 47 | 0.0 | 
+Tapi (West) | RHS 80x40 x 5 | 38.0 | 38.0 | – | – | 37 | 4.4 | 
+Tapi (West) | RHS 122x61 x 3 | 25.2 | 25.2 | – | – | 41 | 0.0 | 
+Tapi (West) | RHS 122x61 x 2.5 | 16.0 | 16.0 | – | – | 42 | 6.5 | 
+Tapi (West) | RHS 80x40 x 2 | 14.0 | 14.0 | – | – | 42 | 0.0 | 
+Tapi (West) | SHS 50x50 x 2 | 13.0 | 13.0 | – | – | 48 | 0.0 | 
+Tapi (West) | RHS 80x40 x 2.5 | 13.0 | 13.0 | – | – | 41 | 0.0 | 
+Tapi (West) | RHS 122x61 x 2 | 12.0 | 12.0 | – | – | 38 | 6.5 | 
+Tapi (West) | SHS 100x100 x 2 | 10.0 | 10.0 | – | – | 35 | new | 
+Tapi (West) | SHS 50x50 x 2.5 | 7.0 | 7.0 | – | – | 51 | 0.0 | 
+Tapi (West) | + 4 smaller SKUs (under 5 MT each, see attachment) | 8.2 | 8.2 | – | – | 53 | 0.0 | 
+Lepakshi (South) | RHS 122x61 x 4 | 29.2 | 29.2 | – | – | 41 | 3.9 | 
+Lepakshi (South) | SHS 72x72 x 5 | 28.0 | 28.0 | – | – | 54 | 8.3 | 
+Lepakshi (South) | RHS 122x61 x 2.5 | 16.9 | 16.9 | – | – | 43 | 2.7 | 
+Lepakshi (South) | SHS 150x150 x 3 | 9.0 | 9.0 | – | – | 34 | new | 
+Lepakshi (South) | RHS 122x61 x 5 | 8.7 | 8.7 | – | – | 40 | 0.0 | 
+Lepakshi (South) | RHS 96x48 x 5 | 6.9 | 6.9 | – | – | 48 | 8.0 | 
+Lepakshi (South) | RHS 96x48 x 4 | 5.8 | 5.8 | – | – | 48 | new | 
+Lepakshi (South) | + 5 smaller SKUs (under 5 MT each, see attachment) | 13.3 | 13.3 | – | – | 55 | 0.0 +2 new | 
+Total | | 1173.0 | 923.9 | 120.5 | 128.6 | | | 
+Not a single tonne moved this week on: CHS 50 NB x 2 (Hyderabad, 27.3 MT), CHS 80 NB x 2.5 (Hyderabad, 23.6 MT), CHS 32 NB x 2.5 (Hyderabad, 19.4 MT), CHS 80 NB x 2 (Hyderabad, 17.1 MT), CHS 80 NB x 1.6 (Hyderabad, 15.1 MT), CHS 20 NB x 1.6 (Hyderabad, 11.8 MT), RHS 75x25 x 3 (Hyderabad, 10.5 MT), CHS 65 NB x 2.5 (Hyderabad, 9.1 MT), RHS 60x40 x 2.5 (Hyderabad, 11.7 MT), RHS 80x40 x 2 (NPMD, 47.8 MT), RHS 80x40 x 3 (NPMD, 29.6 MT), RHS 60x40 x 3 (NPMD, 17.4 MT), SHS 38x38 x 3 (Hyderabad, 13.2 MT), RHS 60x40 x 3 (Hyderabad, 12.2 MT), CHS 20 NB x 2 (Hyderabad, 7.4 MT), SHS 50x50 x 1.6 (Hyderabad, 5.7 MT), RHS 60x40 x 1.6 (NPMD, 94.0 MT), RHS 60x40 x 2.5 (NPMD, 42.0 MT), SHS 50x50 x 2 (NPMD, 40.3 MT), SHS 50x50 x 1.6 (NPMD, 37.9 MT), RHS 60x40 x 2 (NPMD, 35.6 MT), RHS 80x40 x 4 (Tapi, 43.0 MT), SHS 150x150 x 3 (Tapi, 40.0 MT), RHS 122x61 x 3 (Tapi, 25.2 MT), RHS 80x40 x 2 (Tapi, 14.0 MT), SHS 50x50 x 2 (Tapi, 13.0 MT), RHS 80x40 x 2.5 (Tapi, 13.0 MT), SHS 50x50 x 2.5 (Tapi, 7.0 MT), RHS 122x61 x 5 (Lepakshi, 8.7 MT).
+Please take these up with distributors first.
+Regards,[Your name]
+

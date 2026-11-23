@@ -1,0 +1,8 @@
+{
+ "file": "reports/Aged-FG-Push-Email-2026-11-23.html",
+ "sha256": "4af34f1d9df02804ce7001dbdc6c0fb939e0ca81efca40e2e2c295162d792330",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All mail figures recomputed: sections 1-3, headline, capped Sold since 16-Nov (Hyd 44.0, Tapi 44.1), 2.8=x3 mapping plausibility, small-SKU groups, not-a-tonne list (15), action claims; all within 0.1 MT",
+ "at": "2026-11-23T07:51:50+00:00"
+}
