@@ -224,10 +224,12 @@ def main():
         check('R14 Billed = invoices', n1['K4'].value == 0 and n1['K6'].value == 6.68,
               f'25x25 typed 3 but nothing invoiced -> 0; the 150x150 row -> 6.68; got {n1["K4"].value} / {n1["K6"].value}')
         check('R14 invoiced-not-indented row added under its distributor',
-              [n1.cell(7, c).value for c in range(2, 13)] == ['=B5+1', 'X', 'South', 'SOUTH A', 'Black', 'RHS', '60x40', 2, 0, 2.505, '=J7-K7'],
+              [n1.cell(7, c).value for c in range(2, 13)] == ['=B5+1', 'X', 'South', 'SOUTH A', 'Black', 'RHS', '60x40', 2, 0, 2.505, '=N(J7)-N(K7)'],
               f'row 7 = South A RHS 60x40 2: Indent 0, Billed 2.505 (exact, not 2.5 or 2.51 — Oct-26 the rounded cells summed 0.045 MT short), S.No and Pending formulas; got {[n1.cell(7, c).value for c in range(2, 13)]}')
-        check('R14 formulas follow the moved rows', n1['B8'].value == '=B7+1' and n1['L8'].value == '=J8-K8' and n1['J9'].value == '=SUBTOTAL(9,J4:J8)',
-              f'West C now row 8 (=B7+1, =J8-K8); SUBTOTAL covers J4:J8; got {n1["B8"].value} {n1["L8"].value} {n1["J9"].value}')
+        check('R14 formulas follow the moved rows', n1['B8'].value == '=B7+1' and n1['L8'].value == '=N(J8)-N(K8)' and n1['J9'].value == '=SUBTOTAL(9,J4:J8)',
+              f'West C now row 8 (=B7+1, =N(J8)-N(K8)); SUBTOTAL covers J4:J8; got {n1["B8"].value} {n1["L8"].value} {n1["J9"].value}')
+        check('R14 Pending reads a text Indent as 0', all(str(n1.cell(r, 12).value).startswith('=N(J') for r in range(4, 9)),
+              f'Nov-26: 148 Indent cells held a non-breaking space and =J-K gave #VALUE!; got {[n1.cell(r, 12).value for r in range(4, 9)]}')
         check('R15 row without a distributor joins the row above', 'Row 6: no distributor — read as South A' in nout and n1['P6'].value is not None,
               f'row 6 (150x150 4, billed 6.68) is South A SHS 150x150 and gets stock columns; stdout: {nout.splitlines()[-3:]}')
         ck = [r_[0] for r_ in nw['Checks'].iter_rows(values_only=True) if r_[0]]
@@ -242,7 +244,7 @@ def main():
                                                    ['=B8+1', 'Y', 'West', 'WEST C', 'Black', 'RHS', '100X50', 2, 9, None, '=J9-K9']]
         ow, oout = build_new(tmp, ov); o1 = ow['Sheet1']
         got_ = [(o1.cell(r_, 5).value, o1.cell(r_, 8).value, o1.cell(r_, 9).value, o1.cell(r_, 10).value, o1.cell(r_, 12).value) for r_ in (9, 10)]
-        check('R18 data typed over an old footer is still data', got_ == [('WEST C', '150X150', 5, 7, '=J9-K9'), ('WEST C', '100X50', 2, 9, '=J10-K10')]
+        check('R18 data typed over an old footer is still data', got_ == [('WEST C', '150X150', 5, 7, '=N(J9)-N(K9)'), ('WEST C', '100X50', 2, 9, '=N(J10)-N(K10)')]
               and o1['B9'].value == '=B8+1' and o1['P10'].value is not None,
               f"a row with a distributor and thickness over SUBTOTAL formulas, and the row after it, are read and get stock columns; got {got_}, B9={o1['B9'].value}")
         bad = [list(r_) for r_ in NEW_LAYOUT]; bad[3][2] = 'South'

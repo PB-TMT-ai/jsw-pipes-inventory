@@ -22,7 +22,7 @@
 # Rules (see blueprints/indent-truck-plan.md): stock = produced - dispatched (weight from the SKU
 # master, never density); CRFH is read as Black; 3 mm and 3.2 mm are one size; obvious typos in the
 # indent are corrected for the maths only and listed on stdout; loads are whole lines >= 1 MT, one
-# plant per truck; short stock is shared pro rata to qty left within a region.
+# plant per truck; short stock is shared pro rata to qty left, plant by plant (fuller first) within a region (R7).
 
 import sys, os, re, copy, json, math, argparse, openpyxl
 from openpyxl.utils import get_column_letter as L
@@ -240,7 +240,8 @@ if C_BILL:
                 ws.cell(r, C_SNO).value = f'={L(C_SNO)}{lastno}+1' if lastno else 1
             if ws.cell(r, C_SNO).value is not None: lastno = r
     if C_PEND:
-        for rc in recs: ws.cell(rc[0], C_PEND).value = f'={L(C_QTY)}{rc[0]}-{L(C_BILL)}{rc[0]}'
+        # N(): Nov-26 indent had 148 Indent cells holding a non-breaking space -> plain J-K gave #VALUE!
+        for rc in recs: ws.cell(rc[0], C_PEND).value = f'=N({L(C_QTY)}{rc[0]})-N({L(C_BILL)}{rc[0]})'
     for r in range(nfooter, nfooter + (max(snap) + 1 - footer)):
         for c in range(1, LASTC + 1):
             v_ = ws.cell(r, c).value
@@ -536,7 +537,7 @@ for tid, rows_ in trucks.items():
 r += 1
 for line in ["Qty Left = Indent − Dispatch for that distributor and size; dispatch = this month's invoices to the distributor from ANY plant. Trucks load only from the distributor's own region (South: Hyderabad + Lepakshi, West: NPMD + Tapi).",
              'Load = what goes on this truck, capped by stock on hand. A size split across two trucks repeats Indent / Dispatch / Qty Left — add the Load column, not Qty Left.',
-             'Short stock shared by distributors of a region is split in proportion to qty left; a share under 1 MT is dropped and the rest re-split pro rata. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
+             'Short stock is split plant by plant (fuller plant first) among the distributors of the region, in proportion to qty left; a share under 1 MT is dropped and the rest re-split pro rata. One plant per truck; no line under 1 MT. CRFH counted as Black; 3 mm includes 3.2 mm.']:
     tp.cell(r, 1, line).font = Font(name=FONT, italic=True, size=9); r += 1
 for c, w in zip('ABCDEFGHIJK', (11, 24, 11, 10, 10, 10, 10, 11, 11, 10, 13)): tp.column_dimensions[c].width = w
 tp.freeze_panes = 'A4'
