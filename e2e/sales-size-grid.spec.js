@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test'
-import { signIn } from './signin.js'
+import { signIn, openDashboard } from './signin.js'
+// Size × Thickness is a screen of Dashboards › Sales (ADR-0018).
+const openGrid = (page) => openDashboard(page, 'Sales', 'Size × Thickness')
 
 // ── Sales tab, Size × Thickness: standard thicknesses and its own Plant filter ───────────────────
 // SHS 38x38 in five catalogue thicknesses (DEFAULT_SKUS codes, so tonnage is re-derived from the
@@ -24,7 +26,7 @@ const rows = {
 
 test('the grid shows standard thicknesses and narrows to a picked plant', async ({ page }) => {
   await signIn(page, 'admin', { rows })
-  await page.getByRole('button', { name: 'Sales', exact: true }).click()
+  await openGrid(page)
   const grid = page.getByRole('table', { name: 'Sales by size and thickness' })
   await expect(grid).toBeVisible()
 
@@ -42,7 +44,8 @@ test('the grid shows standard thicknesses and narrows to a picked plant', async 
   // Plant = NPMD: only NPMD's 2.1 T run is left
   await page.getByRole('button', { name: 'Plant: All' }).click()
   await page.getByLabel('NPMD').check()
-  await expect(page.getByRole('heading', { name: /Size × Thickness — All Distributors · NPMD/ })).toBeVisible()
+  // The title no longer repeats the screen name (ADR-0018): it reads the scope alone.
+  await expect(page.getByRole('heading', { name: 'All Distributors · NPMD', exact: true })).toBeVisible()
   // only the 3.0 column is left in each block: Opening [3.0, Total], Production [3.0, Total]
   await expect(grid.locator('thead tr').nth(1).locator('th').first()).toHaveText('3.0')
   expect((await cells()).slice(2, 6)).toEqual(['', '', '2.1', '2.1'])
@@ -52,7 +55,7 @@ test('the grid shows standard thicknesses and narrows to a picked plant', async 
 
 test('with no Region picked, the Plant filter offers every plant', async ({ page }) => {
   await signIn(page, 'admin', { rows })
-  await page.getByRole('button', { name: 'Sales', exact: true }).click()
+  await openGrid(page)
   await page.getByRole('button', { name: 'Plant: All' }).click()
   for (const p of ['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi']) await expect(page.getByLabel(p, { exact: true })).toBeVisible()
 })
@@ -76,7 +79,7 @@ const underRow = (grid, label) => grid.locator('tbody tr', { hasText: label }).f
 
 test('Raw material: slit coil in its size row, HR coil and totals under Total, per plant', async ({ page }) => {
   await signIn(page, 'admin', { rows: coilRows })
-  await page.getByRole('button', { name: 'Sales', exact: true }).click()
+  await openGrid(page)
   await page.getByRole('button', { name: 'Raw material', exact: true }).click()
   const grid = page.getByRole('table', { name: 'Sales by size and thickness' })
   await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · Hyderabad' })).toBeVisible()
@@ -98,7 +101,7 @@ test('Raw material: slit coil in its size row, HR coil and totals under Total, p
 
 test('Raw material: the Region and Plant filters narrow the coil blocks; no other region’s plant shows', async ({ page }) => {
   await signIn(page, 'admin', { rows: coilRows })
-  await page.getByRole('button', { name: 'Sales', exact: true }).click()
+  await openGrid(page)
   await page.getByRole('button', { name: 'Raw material', exact: true }).click()
   const grid = page.getByRole('table', { name: 'Sales by size and thickness' })
   await expect(grid.locator('thead th', { hasText: 'Slit coil that fits · NPMD' })).toBeVisible()
@@ -118,9 +121,13 @@ test('Raw material: the Region and Plant filters narrow the coil blocks; no othe
 
 test('Raw material: the CSV carries the coil blocks and the rows under Total', async ({ page }) => {
   await signIn(page, 'admin', { rows: coilRows })
-  await page.getByRole('button', { name: 'Sales', exact: true }).click()
+  await openGrid(page)
   await page.getByRole('button', { name: 'Raw material', exact: true }).click()
-  const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '⬇ CSV' }).first().click()])
+  const [dl] = await Promise.all([page.waitForEvent('download'), (async () => {
+    // The grid's CSV is in the one Export menu (ADR-0018).
+    await page.getByRole('button', { name: 'Export ▾' }).click()
+    await page.getByRole('menuitem', { name: /^Size × Thickness CSV/ }).click()
+  })()])
   const csv = await (await import('node:fs/promises')).readFile(await dl.path(), 'utf8')
   expect(csv).toContain('Slit coil that fits · Hyderabad 2.0')
   expect(csv).toContain('Slit coil that fits · Lepakshi Total')

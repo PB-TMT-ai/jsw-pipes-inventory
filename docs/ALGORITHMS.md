@@ -13,6 +13,7 @@ Pure helpers live in `src/lib/calc.js`. Formulas:
 - Coil consumption (`coilConsumption`) = Σ production `coilAllocations`; a coil's free capacity = `actualWeight − consumed`.
 - **Slit-coil stock: one coil, one production run** (`babyCoilIsAssigned` / `babyCoilIsStock` / `babyCoilStock`, ADR-0015, superseding ADR-0007). A slit coil is stock only while it is **not deleted** and **no live production names it** in `coilAllocations`, and it counts at its **full slit weight**. Once assigned it is out whole — what is left on it is not stock, not suggested by FIFO, not listed in the manual picker, and **not shown anywhere**. "Assigned" is read live from productions (presence in the `coilConsumption(…, 'babyCoilId')` map, not weight), so deleting or editing the production gives the coil back; the production being edited is excluded, so its own coils stay pickable. The **0.2 T scrap floor and the operator's `consumed` flag are retired** (the `baby_coils.consumed` column stays, unread). `babyCoilFree` is still unfloored and still feeds the picker label. Every screen that counts, offers or reports slit-coil stock reads these — Dashboard "Slit Coils Left", Coil Tracker, the Production FIFO adapter and manual picker, the Raw Material report, the PB MTD workbook, the daily message, the Inventory Snapshot and the Inventory overview. See `docs/adr/0015-*`.
 - Bundle availability (`producedPool`) per SKU = `produced − bundled`; bundling is capped at it.
+- **Dispatch coil trace is per plant** (`dispatchCoilTrace(…, plant)`, Nov-2026). An invoice line inherits its coils by FIFO over **its own plant's** productions of that SKU, after skipping what **that plant's** earlier invoices took — never another plant's queue (a tube invoiced from Tapi was made at Tapi). Short of production, the line is traced short, not topped up from elsewhere. The trace is frozen onto the entry at upload, so the upload is **refused while `dispatches` or `productions` failed to load**: on 31-Oct-2026 an empty dispatch store made October restart at the oldest tubes and double-claim 1,276 T across 180 coils. Repair: `scripts/dispatch-retrace-dryrun.mjs`.
 - Dispatch cost rate = `HR Coil Cost Price / HR Coil Actual Weight` (₹/MT), weight-weighted across each entry's `coilAllocations` (legacy fallback: single `traceHrCoilId`).
 - **A dispatch record's weight is a function of its entries, never an independent fact** (`withDispatchEntries`): `theoreticalWeight = Σ entry weight`, `selectedBundles = entries`, and `variance = vehicleWeight − theoreticalWeight` (0 when nothing was weighed — no weighbridge reading is *no measurement*, not a variance of the whole load). Anything that changes which entries a record holds goes through this one helper — the daily upload building a record (`assembleDispatchRecords`, which both `buildInvoiceDispatches` and the legacy `buildDispatchRecords` end at) and the plant filter narrowing one (`filterDispatchesByPlant`). They previously each carried their own copy of the arithmetic in two different files, which is how the two would eventually have disagreed about what one invoice weighs. `vehicleWeight` is deliberately **not** derived: it is a whole-vehicle weighbridge figure and cannot be split when the entries are.
 - **Distributor × SKU stock** (`salesByDistributor` with `opts.productions`) — per distributor and canonical SKU, scoped to the distributor's **service area** (ticket #129): its region → the plants whose `serves` includes it → the pool. `pending = confirmed + nonConfirmed`; `onhand = max(0, producedPool.availableWeight)` over **those plants'** productions less **those plants'** dispatch entries; `allConfirmed` = Σ Confirmed across every distributor **in that area**; **`freeStock = onhand − allConfirmed`** — the displayed figure, area stock promised to nobody yet, **not floored** so an over-committed size reads negative; `allPending` = Σ pending across every distributor **in that area** for that SKU; `freeStockByPlant` = that free tonnage split across the serving plants pro-rata by holding, which is what the workbook prints (ADR-0010); `shortBy = max(0, pending − onhand)` — still measured against on-hand, so a row can show no shortfall beside a negative Free Stock. All four halves move **together**: scoping only the productions would subtract South's invoices from West's empty pool and read every West SKU as negative, and would net South's Confirmed off West's zero. Inside an area the pool is still divided between nobody, so the identical tonnage repeats on every row there for that size and `shortBy` can read 0 on an oversubscribed size (ADR-0002 — 39.3 T of `50x50x2.0` against 78 T queued). **Across** areas nothing repeats: on 20-Aug-2026 every production row is Hyderabad's, so West rows read 0 Free Stock and their full pending as `Short by`, and they fill in by themselves the day NPMD produces (ADR-0006). A distributor whose region is `Unmapped` has **no known service area**, so every stock field is `null` — `?` in the workbook, an em dash on screen, **never 0**. Both the Sales tab drill-down and the PB MTD workbook's **Distributor × SKU** sheet read this one function, so screen and workbook cannot disagree (the sheet names the same figure `Free Inventory (area)`, which is not the app Dashboard's company-wide `Free Inventory (T)` — see CONTEXT.md); the sheet lists only live pairs (pending or invoiced MTD above zero), sorts region → distributor → pending desc, and **never totals `onhand`** — summing it reports more stock than the area holds. Each SKU row also carries its own **`description`** — the SKU master's when it has a row for the code, else the **order line's own** description. 37 of the ERP codes on the order book have no master row at all (ordered, never produced), and for those the order line is the only place the tube's name exists; without it both the screen and the workbook printed the raw MM ID (`1140-13075-10078295`) where the description belongs. The workbook's SKU label is derived from that description in the same `size x thickness` shape the SKU Ageing sheet uses, so the two sheets still join.
@@ -1441,3 +1442,150 @@ ticked, marked — grey). Every screen reads those two and decides nothing of it
 - Week plan: its tonnes are still in no plant's weeks; `unplaced.notMade` lists them, labelled as not made.
 
 Master chip, step-bar count and campaign chip are therefore the same number before and after marking.
+
+## Planning — FM / MM / SM and FG days of cover (ticket #375; rules #370–#373, CONTEXT.md)
+`planningMovesCover({ productions, dispatches, skus, plants, stored, today })` (calc.js) gives every live
+planning-master row, per region, a **FM / MM / SM** tag and **FG days of cover**. `planningMasterView` and
+`planningCampaignView` both call it and hand each row `moves` and `cover`; the screens print them and compute nothing.
+
+- **Blended monthly rate** (`planningBlendedRate`): 10 % × last month + 30 % × avg of last 3 + 30 % × avg of last 6 +
+  30 % × avg of last 12. Windows are nested and end on the last whole calendar month before `today`. Sales = invoice-entry
+  weight at the **shipping plant**, landed by `planningRowIn` (the rule behind the campaign's `last` / `three`). Each
+  window is clipped to the **region's** first invoice (South first invoice 31-Mar-2026 → 7.03 months in the 12-month
+  window; West 30-Aug-2026 → 2.06); a window that ends before it adds 0. Compared unrounded.
+- **Tag** (`planningMoveTags`), per region, rows ranked by rate: **FM** (fast moving) while the share of region tonnage
+  ranked strictly above the row is under 70 %, **MM** (medium moving) under 90 %, else **SM** (slow moving). Equal rates share a tag. Under
+  0.05 MT/month = **No sales**. Retired rows and Outside-the-plan lines get no tag and are outside the ranking. Buffer,
+  MTO and no-plant rows are tagged like any other. `moves.tag` is FM / MM / SM and `moves.label` prints the same (the glossary names, CONTEXT.md).
+- **FG days of cover (blended)** (`planningCoverDays`) = stock now ÷ (rate ÷ 30). Stock now = the Dashboard's FG (`planningHoldings`),
+  one pool per region (ADR-0006). No sales + stock → **No use**; sales, no stock → **0 d, Running out**; neither → empty.
+- **Brackets** (by tag; days rounded to whole first, so the printed number always sits in the named bracket):
+  Running out FM <7, MM <10, SM <5 · Thin 7–14 / 10–20 / 5–14 · Healthy 15–45 / 21–60 / 15–90 · Heavy 46–75 / 61–90 / 91–180 ·
+  Too much >75 / >90 / >180.
+- **Live check, 16-Nov-2026:** South 245 rows, 1,305.6 MT/month, stock 973.5 MT, 47/32/38 + 128 No sales; West 240 rows,
+  1,460.8, 1,655.0, 24/17/22 + 177.
+
+## Sales tab — FM / MM / SM · FG days of cover sub-tab (ticket #375; the join is built (#383), the screen shell (#384), the three tabs (#379–#381), raw material (#382))
+One sub-tab, built on the rules above (#370–#373, `planningMovesCover`); it adds **no new tag or cover rule**.
+Prototype (layout only, live rows of 16-Nov-2026): the design session's `fm-mm-sm-days-of-cover-tabs.html`, linked from #375.
+
+- **The join (built, #383 — `fmMmSmRows` and `fmMmSmJoin`, calc.js, next to `planningMovesCover`).** Pure functions, no screen.
+  - **`fmMmSmRows({ productions, dispatches, skus, plants, stored, today, region })`** wraps `planningMovesCover` and reads its
+    `byRow[id]` (rate, tag, stock, cover) — it never recomputes any of them. One entry per **live** master row of the region (a retired
+    row is not a row), in master order: id, region, section, size (as the master spells it), thickness band, `cellKey`, tag,
+    `coverDays` (whole days, null when none), `coverKind`, `bracket` (the word), `inventory` (Current inventory) and `rate`
+    (Blended monthly rate). **The feed is unfiltered:** it takes no plant filter, so the Sales grid's Plant filter changes no tag,
+    rate or SKU count (the tag is a regional fact).
+  - **One cell key.** `salesGridCellKey` — `section | size | standard thickness`, e.g. `CHS|40 NB|3`, `SHS|91.5x91.5|3`.
+    The master's size is put into the grid's spelling by the two shared helpers: `planningSizeKey` (`40NB` → `CHS 40`; `91x91` →
+    `SHS 91.5x91.5`; larger side first) and `salesGridShape` (`40 NB`, `91.5x91.5`). Both are now exported; nothing re-spells a size.
+  - **One thickness rule.** The planning band goes through `thicknessBucket` (fixed list 1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0; nearest,
+    a tie to the heavier), applied by `salesGridShape` as `stdThickness`. So 2.2 → 2.0, and 2.8 / 2.9 / 3.2 → 3.0. There is no second
+    rule. A row whose size or thickness cannot be read has `cellKey: null`.
+  - **`fmMmSmJoin(rows, gridLines)`** lands the rows on the grid cells and returns
+    `{ region, landed, notShown, multi, untagged, totals }`:
+    - `landed` — cell key → the rows on it. A row lands when its cell is on the grid (some line has any stock or order there).
+    - `notShown` — a row with no cell, **named, never dropped**, with a reason: **`no stock and no orders`** (the grid has no cell
+      for it and it holds no stock) or **`no cell for this size or thickness`** (the cell cannot be built, or the row holds stock the
+      grid files elsewhere — e.g. a 4.0 tube of a size whose master bands are 5.0 and 6.0 counts on the 5.0 row for planning but sits in
+      the grid's 4.0 cell). `landed` + `notShown` = the region's SKU count.
+    - `multi` — cell keys holding more than one SKU (two master bands that fold into one grid thickness, e.g. a 2.8 beside a 3.0). The
+      screen must not guess a tag for such a cell; on the 16-Nov-2026 live data it should be empty — if it is not, stop and ask the owner.
+    - `untagged` — grid cells no SKU landed on (retired rows, lines outside the plan, the other-thickness cell above), each with the
+      grid's own Closing stock, Dispatch and Pending to Dispatch. `totals.tagged + totals.untagged = totals.grid`, per region.
+  - **One region per run.** `gridLines` come from `salesSizeLines` run once per region — that region's sales rows
+    (`distRows.filter(r => r.region === region)`) and `stockRegions: [region]` — so a cell never mixes regions and a run never reads the
+    other region's stock (ADR-0006). `fmMmSmJoin` refuses rows of two regions. Two regions can share a size; they then have two
+    separate cells with the same key, one per run.
+  - **Tested** in `src/lib/fm-mm-sm-join.test.js` on an **invented** fixture (`src/lib/__fixtures__/fm-mm-sm-join-invented.json`).
+    The frozen 16-Nov-2026 live fixture is **not built yet** (it needs the live database), so the figures below are not yet checked
+    against it.
+
+- **The screen's calc (built, #384 — calc.js, after `fmMmSmJoin`; tests in `src/lib/fm-mm-sm-subtab.test.js`, invented fixture).**
+  - `fmMmSmFeed({ productions, dispatches, skus, plants, stored, today })` → `[{ region, rows, cards }]` for `FM_MM_SM_REGIONS`
+    (South, then West). Fed the **whole** stores, never the header-plant-filtered ones: its cards equal `planningMovesCover`'s
+    `byRegion` counts, rate and stock, under any plant selection.
+  - `fmMmSmCards(rows)` → `{ skus, counts: { FM, MM, SM, No sales }, rate, inventory }` — sums of the rows, nothing new.
+  - `fmMmSmCut(rows, { sections, sizes, thicknesses })` — `filterSalesLines`' rule read off each SKU's cell key; a SKU with no cell is
+    kept only while no filter is set. The screen joins the cut SKUs to the FM / MM / SM view's lines under the same filters, so its
+    Tagged + Not tagged row always equals that view's Total.
+  - `fmMmSmCellLabel(rowsOnCell)` → `{ kind, text, bracket, word, tag, title }`: `days` (`7 d FM`, the rounded days the bracket was
+    chosen on), `noUse`, `none` (No sales), `untagged` ("—"), `multi` ("2 SKUs", no tag guessed).
+  - `fmMmSmNotShownReason(row, plantScoped)` — under a plant filter a SKU whose cell can be built reads `nothing at the plant picked`,
+    not `no cell for this size or thickness` (the join's reasons describe the grid as every plant sees it).
+
+- **Unit and join.** One grid cell = one **SKU** (a planning-master row: region × size × standard thickness). The tag and
+  cover come from `planningMovesCover` for that row; the cell's Production required, Pending to Dispatch, Closing stock and
+  Dispatch come from the Sales grid's own `salesSizeLines` / `salesSizePivot`. **Build must prove the join** before drawing
+  anything: South 245 and West 240 tagged SKUs, each landing on exactly one grid cell, with the Sales grid's thickness
+  buckets and the planning thickness bands agreeing (the 3.0 band holds 3.0 and 3.2 mm). A SKU that does not land is named
+  on screen, never dropped.
+- **Two stocks, both printed.** FG days of cover divides **Current inventory** (stock now, `planningHoldings`); the grid's
+  **Closing stock** is stamped with the To date and can be negative (South 845 T against 973.5 T on 16-Nov-2026). Keep both;
+  each column header and tooltip says which it is.
+- **Raw material split (#382, Step 0 — written before the code).** Two figures, named apart (CONTEXT.md):
+  *Slit coil that fits* is the Sales grid's (`salesCoilBlocks`): a shared coil shows in **every** size it fits, and only the
+  Total row counts it once. **Raw material available** is the sub-tab's: a size × thickness cell's **share** after the split
+  below, so the cells add up to the coil counted once. **Raw material required** = max(0, Production required − Raw material
+  available), **plant by plant**, then added per cell (below). Ignores yield loss from coil to tube.
+  - **Which coil.** One region per run (the region block). Slit coil on hand **as of To** (`coilOnHand`, the same cut as
+    `salesCoilBlocks`) at the plants serving the region (`plants.serves`), narrowed — never widened — by the Plant filters.
+    A coil **fits** a size when it is at its own plant, in the size's standard thickness band (`thicknessBucket`) and within
+    ±5 mm (`WIDTH_TOL_MM`) of the size's strip width — the Dashboard's fit, unchanged. Only sizes **on the region's grid**
+    (a line at any thickness) take a share; a coil fitting only master sizes off the grid is *off the grid*, one fitting no
+    master size is *fits no size*, and HR coil (not yet slit) has no size. These three sit in the *Raw material by plant*
+    table, never in a cell. A coil's cell is `section|size|its own band`: a coil is never moved to another band or plant.
+  - **One plant at a time — the plant is never crossed** (CLAUDE.md "Never let allocation cross plants"). Steps 1 and 2 run
+    separately for each plant serving the region, against **that plant's own Production required**
+    (`fmMmSmRequiredByPlant`: the grid's rule run on the plant alone — its orders, its invoices, its stock — the figure the
+    Plant filter shows for it). A plant's coil covers only its own plant's need. Per cell the plants are then **added for
+    display**: available = Σ, Production required = Σ, Raw material required = Σ max(0, plant's required − plant's available).
+    So a cell can hold more coil than it needs and still need coil, when the spare coil is at the other plant; and the
+    sub-tab's Production required can read above the grid's region figure where one plant's finished stock would cover
+    another plant's orders. The hover names each plant's share. (Earlier draft pooled Hyderabad and Lepakshi into one South
+    cell; dropped in review, 18-Nov-2026, because it let one plant's coil offset the other's need.)
+  - **Step 1 — single-size coils.** A coil that fits exactly one size goes whole to that size's cell, even beyond what it needs.
+  - **Step 2 — shared coils, one at a time in slit-coil id order** (deterministic: the same order on every run). For a coil
+    of weight *w* fitting sizes *S*, each size's **need** = its plant's Production required less what that plant has given
+    it so far (never below 0); *N* = the sum of the needs over *S*.
+    - *w* < *N*: each size gets *w* × need ÷ *N* — in proportion to what it still needs, so none gets more than it needs.
+    - *w* ≥ *N*: each size gets exactly its need (**the cap**), and the **surplus** *w* − *N* is shared **equally** over *S*.
+      With *N* = 0 the whole coil is surplus.
+    - "In proportion to Production required" is read as **what is still needed** after the coils before it (equal to
+      Production required for the first coil a cell meets). Proportional to the untouched figure could give a size more than it
+      needs and would need a second pass; this reading cannot. Decided in #382, not by the plant.
+  - **Tolerance.** Fit: ±5 mm of strip width. Sums: tonnage is never rounded inside the split; cells + off the grid + fits no
+    size + HR coil equal the plants' coil on hand to within 0.001 T. Screens round to 0.1 T; a cell under 0.05 T reads blank.
+  - **Worked example (invented South numbers, frozen as `src/lib/__fixtures__/fm-mm-sm-raw-material-invented.json`).** 2.0 mm;
+    Production required **Hyderabad** 38×38 = 9.0 T, 50×25 = 0.5 T, 50×50 = 1.0 T; **Lepakshi** 50×25 = 0.4 T.
+    Strips 38×38 = 148, 50×25 = 146, 50×50 = 196 mm.
+    Hyderabad: A 152 mm 2.0 T (38×38 only), B 196 mm 3.0 T (50×50 only), C 147 mm 1.5 T and D 147 mm 3.0 T (both sizes).
+    Lepakshi: E 146 mm 3.4 T (both sizes).
+    1. Hyderabad, step 1: 38×38 gets A (2.0, still needs 7.0); 50×50 gets B (3.0 against 1.0, needs 0). 50×25 needs 0.5.
+    2. C 1.5 T: needs 7.0 and 0.5, *N* = 7.5 → 38×38 1.4, 50×25 0.1. Needs now 5.6 and 0.4.
+    3. D 3.0 T: *N* = 6.0 → 38×38 2.8, 50×25 0.2. Hyderabad still needs 2.8 and 0.2.
+       Without E: available 38×38 **6.2** (required **2.8**), 50×25 **0.3** (**0.6** = Hyderabad 0.2 + Lepakshi 0.4, which
+       has no coil), 50×50 **3.0** (**0**); 9.5 T = A+B+C+D.
+    4. Lepakshi, E 3.4 T: Lepakshi's needs are 38×38 0 and 50×25 0.4, *N* = 0.4 ≤ 3.4 → the cap, 0 and 0.4; surplus 3.0 →
+       1.5 each. E never meets Hyderabad's 2.8 and 0.2.
+       Final: 38×38 **7.7** (6.2 + 1.5), required **2.8**; 50×25 **2.2** (0.3 + 1.9) against 0.9 needed, yet required **0.2**
+       (Hyderabad's shortfall; pooled it would read 0); 50×50 **3.0**, required 0. 12.9 T = A+…+E, each coil once.
+    The Dashboard's *Slit coil that fits* for the same coils reads 38×38 = 9.9 (A+C+D+E), 50×25 = 7.9 (C+D+E), 50×50 = 3.0.
+  - **Not Planning's hand-out.** Planning's `planningCoilHandOut` (calc.js, ADR-0015) gives each slit coil **whole** to one
+    row. This split is a **display-only allocation** on the sub-tab: it moves no coil, saves nothing, and Planning is not
+    changed. The two can disagree on the same coils. **The plant confirmed this method on 18-Nov-2026** (relayed by the owner; on
+    17-Nov-2026 only the split itself was agreed); the sub-tab's note says so on screen. The Sales Dashboard's Raw material chip and its Production check
+    view are unchanged and keep counting a shared coil in every size it fits.
+  - **Live check still open.** South 73 coils (43 shared), 245.8 T; West 39 (27), 161.6 T; Raw material required about
+    201.4 T South, 169.1 T West (16-Nov-2026, the prototype's figures). Not re-derived from these steps yet: no live fixture.
+- **Status key numbers** (per FM / MM / SM and *No use* / *No sales*): SKU count and Current inventory per bracket box, summed
+  from the same cover rows — they must equal the grid. **No sales** SKUs show no days and no rate but keep orders and raw
+  material, because a SKU that never sells can still be on the order book.
+- **Make next / Stock stuck.** *Make next* = Running out and Thin SKUs, ordered Running out first, then Thin, FM before MM
+  before SM, biggest Blended monthly rate first. *Stock stuck* = Heavy and Too much SKUs, most Current inventory first. Both
+  are listed **section by section** (SHS, RHS, CHS), each section headed with its SKU count and Current inventory, with a
+  Priority / Size switch (size, then thickness) inside every section. Nothing is cut to a top-N.
+- **Settled by the owner, 17-Nov-2026:** the sub-tab is named **FM / MM / SM**; the proportional coil split is built now and the sub-tab
+  carries a visible note that the method awaits the plant's confirmation; the plant filter keeps the region's tag (see UI-PATTERNS).
+- **Still open:** sales-but-no-stock SKUs reading *0 d Running out* (South 31, West 12); tag flips and colour limits (#369).
+

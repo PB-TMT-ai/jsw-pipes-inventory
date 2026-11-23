@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { signIn, stubSignIn, writeRecorder, LOGINS } from './signin'
-// The Dashboard's screen tabs and its one Export menu (#303).
-const screenTab = (page, name) => page.getByRole('group', { name: 'Dashboard screen' }).getByRole('button', { name, exact: true })
+import { signIn, stubSignIn, writeRecorder, LOGINS, openDashboard } from './signin'
+// The Inventory dashboard's screens (ADR-0018: Dashboards › Inventory › <screen>) and its one Export menu (#303).
+const screenTab = (page, name) => page.getByRole('tablist', { name: 'Inventory screens' }).getByRole('tab', { name, exact: true })
+// The dashboard row under the one Dashboards tab.
+const dashRow = (page) => page.getByRole('group', { name: 'Dashboard', exact: true })
 const exportCSV = async (page, item) => {
   await page.getByRole('button', { name: 'Export ▾' }).click()
   await page.getByRole('menuitem', { name: new RegExp(`^${item}`) }).click()
@@ -19,14 +21,17 @@ const exportCSV = async (page, item) => {
 // Sign-in goes through the real form; only the one database call is stubbed (see ./signin.js).
 
 const tab = (page, name) => page.getByRole('button', { name, exact: true })
-const ALL_TABS = ['Dashboard', 'Coil Tracker', '1. Coil Inward', '2. Slitting', '3. Production',
-  '4. Dispatch', 'Masters', 'Orders & Invoice', 'Sales', 'Production Planning', 'Reports']
+// Coil Tracker and Sales are dashboards under Dashboards now (ADR-0018), not app tabs.
+const ALL_TABS = ['Dashboards', '1. Coil Inward', '2. Slitting', '3. Production',
+  '4. Dispatch', 'Masters', 'Orders & Invoice', 'Production Planning', 'Reports']
+const ALL_DASHBOARDS = ['Inventory', 'Plant drill', 'Coil Tracker', 'Sales', 'FM / MM / SM']
 const MANUFACTURING_TABS = ['1. Coil Inward', '2. Slitting', '3. Production']
 
 test.describe('admin', () => {
   test('sees every tab, with the plant selector', async ({ page }) => {
     await signIn(page, 'admin')
     for (const name of ALL_TABS) await expect(tab(page, name)).toBeVisible()
+    for (const name of ALL_DASHBOARDS) await expect(dashRow(page).getByRole('button', { name, exact: true })).toBeVisible()
     await expect(page.getByLabel('Plant', { exact: true })).toBeVisible()
     // Starts on All Plants, exactly as #121 left it — deploy day must change no figure on screen.
     await expect(page.getByLabel('Plant', { exact: true })).toHaveValue('__all__')
@@ -104,9 +109,16 @@ for (const [login, plantName] of [['hyderabad', 'Hyderabad'], ['npmd', 'NPMD']])
 
     test('sees the four viewing tabs and the three stages, and no Reports', async ({ page }) => {
       await signIn(page, login)
-      for (const name of ['Dashboard', 'Coil Tracker', '4. Dispatch', 'Sales', ...MANUFACTURING_TABS]) {
+      for (const name of ['Dashboards', '4. Dispatch', ...MANUFACTURING_TABS]) {
         await expect(tab(page, name)).toBeVisible()
       }
+      // Coil Tracker and Sales are dashboards now; FM / MM / SM is admin only (accessFor's fmMmSmSubTab),
+      // so a plant login's dashboard row stops at Sales.
+      for (const name of ['Inventory', 'Plant drill', 'Coil Tracker', 'Sales']) {
+        await expect(dashRow(page).getByRole('button', { name, exact: true })).toBeVisible()
+      }
+      await expect(dashRow(page).getByRole('button', { name: 'FM / MM / SM', exact: true })).toHaveCount(0)
+      await expect(page.getByText('FM / MM / SM')).toHaveCount(0)
       await expect(tab(page, 'Reports')).toHaveCount(0)
       // Production Planning is admin-only (#275), even for a plant that manufactures.
       await expect(tab(page, 'Production Planning')).toHaveCount(0)
@@ -191,7 +203,7 @@ test.describe('the session', () => {
     await page.getByLabel('Password').fill('correct-horse')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByText(/not set up correctly/)).toBeVisible()
-    await expect(tab(page, 'Dashboard')).toHaveCount(0)
+    await expect(tab(page, 'Dashboards')).toHaveCount(0)
   })
 
   test('never tells a plant user with a broken plant id that they see All Plants', async ({ page }) => {
@@ -202,7 +214,7 @@ test.describe('the session', () => {
     await page.getByLabel('Login ID').fill('typo')
     await page.getByLabel('Password').fill('correct-horse')
     await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(tab(page, 'Dashboard')).toBeVisible()
+    await expect(tab(page, 'Dashboards')).toBeVisible()
     await expect(page.getByText('Inventory Management — All Plants')).toHaveCount(0)
     await expect(page.getByText('Inventory Management — hyderbad')).toBeVisible()
   })
@@ -574,10 +586,10 @@ test.describe('the Plant-wise Tracker collapses for a plant login', () => {
   const BOTH_PLANTS_COILS = { rows: { coils: [seedCoil('HYD-T1', 'hyderabad', 11.1), seedCoil('NPM-T1', 'npmd', 77.7)] } }
   // The one table on the Dashboard with a "KPI (MT)" header — the tracker's own grid.
   const grid = (page) => page.locator('table').filter({ hasText: 'KPI (MT)' })
-  // Since #303 the tracker is the Dashboard's "Plant-wise Tracker" screen tab, unchanged.
+  // The tracker is Dashboards › Inventory › Plant-wise Tracker (ADR-0018), unchanged.
   const signInAndOpenMore = async (page, who, opts) => {
     await signIn(page, who, opts)
-    await page.getByRole('group', { name: 'Dashboard screen' }).getByRole('button', { name: 'Plant-wise Tracker' }).click()
+    await screenTab(page, 'Plant-wise Tracker').click()
   }
 
   test('an admin sees TOTAL and all four plant blocks', async ({ page }) => {
@@ -685,10 +697,12 @@ test.describe('the Dispatch plant table collapses for a plant login', () => {
     seedOrder('n1', 'npmd', 'D-W1', 'WEST ONE', 'MAHARASHTRA', 77.7),
   ] } }
   const plantTable = (page) => page.getByRole('table', { name: 'Dispatch by plant' })
+  // The Dispatch summary left the 4. Dispatch tab for Dashboards › Sales › Dispatch (ADR-0018).
+  const openDispatchSummary = (page) => openDashboard(page, 'Sales', 'Dispatch')
 
   test('an admin sees Total and all four plants, captioned as ignoring the header', async ({ page }) => {
     await signIn(page, 'admin', BOTH_PLANTS_ORDERS)
-    await tab(page, '4. Dispatch').click()
+    await openDispatchSummary(page)
     for (const name of ['Hyderabad', 'NPMD', 'Lepakshi', 'Tapi', 'Total']) {
       await expect(plantTable(page).getByRole('cell', { name, exact: true })).toBeVisible()
     }
@@ -700,14 +714,14 @@ test.describe('the Dispatch plant table collapses for a plant login', () => {
   test('scoping the header to Hyderabad leaves the admin’s plant table whole', async ({ page }) => {
     await signIn(page, 'admin', BOTH_PLANTS_ORDERS)
     await page.getByLabel('Plant', { exact: true }).selectOption({ label: 'Hyderabad' })
-    await tab(page, '4. Dispatch').click()
+    await openDispatchSummary(page)
     await expect(plantTable(page).getByRole('cell', { name: 'NPMD', exact: true })).toBeVisible()
     await expect(plantTable(page).getByText('77.7', { exact: true }).first()).toBeVisible()
   })
 
   test('a plant login sees its own row, no Total, and never another plant’s tonnage', async ({ page }) => {
     await signIn(page, 'hyderabad', BOTH_PLANTS_ORDERS)
-    await tab(page, '4. Dispatch').click()
+    await openDispatchSummary(page)
     await expect(plantTable(page).getByRole('cell', { name: 'Hyderabad', exact: true })).toBeVisible()
     await expect(plantTable(page).getByText('11.1', { exact: true }).first()).toBeVisible()   // control
     for (const name of ['NPMD', 'Lepakshi', 'Tapi', 'Total']) {
@@ -790,7 +804,7 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
     await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toHaveCount(0)
     await screenTab(page, 'Plant-wise Tracker').click()
     await expect(page.getByRole('heading', { name: 'Plant-wise Tracker' })).toBeVisible()
-    await screenTab(page, 'Sales & activity').click()
+    await screenTab(page, 'Activity').click()
     await expect(page.getByRole('heading', { name: 'SKU-wise Inventory' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Recent Activity' })).toBeVisible()
     await screenTab(page, 'Stock movement').click()
@@ -802,10 +816,13 @@ test.describe('the Inventory stock table collapses for a plant login', () => {
 
   test('no chart is left on any Dashboard screen', async ({ page }) => {
     await signIn(page, 'admin', BOTH_PLANTS_COILS)
-    for (const name of ['Overview', 'Plant drill', 'Stock movement', 'Plant-wise Tracker', 'Sales & activity']) {
+    for (const name of ['Overview', 'Stock movement', 'Plant-wise Tracker', 'Activity']) {
       await screenTab(page, name).click()
       await expect(page.locator('svg.recharts-surface, .recharts-wrapper')).toHaveCount(0)
     }
+    // Plant drill is its own dashboard now (ADR-0018), first screen Coil & FG grid.
+    await dashRow(page).getByRole('button', { name: 'Plant drill', exact: true }).click()
+    await expect(page.locator('svg.recharts-surface, .recharts-wrapper')).toHaveCount(0)
   })
 
   test('the status reads as a word, and the region switch narrows the rows and the total', async ({ page }) => {

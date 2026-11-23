@@ -938,6 +938,18 @@ describe('dispatchCoilTrace', () => {
     // without keyOf (raw match) the variant code finds NO production → empty trace:
     expect(dispatchCoilTrace('DESC-A', 2, prod, [])).toEqual([])
   })
+  it('with a plant, draws only that plant\'s production and drains only that plant\'s invoices', () => {
+    const prod = [
+      { deleted: false, skuCode: 'A', plant: 'tapi', dateOfProduction: '2026-06-01', coilAllocations: [{ babyCoilId: 'T1-A', hrCoilId: 'T1', pieces: 4, weight: 4 }] },
+      { deleted: false, skuCode: 'A', plant: 'lepakshi', dateOfProduction: '2026-05-01', coilAllocations: [{ babyCoilId: 'L1-A', hrCoilId: 'L1', pieces: 4, weight: 4 }] },
+    ]
+    // Lepakshi's invoice took 3 pcs; it must not shift Tapi's queue, and Tapi must never reach L1.
+    const existing = [{ deleted: false, bundleEntries: [{ skuCode: 'A', pieces: 3, plant: 'lepakshi' }, { skuCode: 'A', pieces: 1, plant: 'tapi' }] }]
+    expect(dispatchCoilTrace('A', 5, prod, existing, null, undefined, 'tapi'))
+      .toEqual([{ babyCoilId: 'T1-A', hrCoilId: 'T1', pieces: 3, weight: 3 }])   // short by 2: no reaching into Lepakshi
+    expect(dispatchCoilTrace('A', 1, prod, existing, null, undefined, 'lepakshi'))
+      .toEqual([{ babyCoilId: 'L1-A', hrCoilId: 'L1', pieces: 1, weight: 1 }])
+  })
 })
 
 describe('skuAgeing — FIFO stock ageing (first produced, first out)', () => {
@@ -3308,6 +3320,13 @@ describe('APP_TABS', () => {
     expect(keys).not.toContain('tubes')
     expect(keys).not.toContain('bundles')
   })
+
+  it('folds Coil Tracker and Sales into Dashboards (ADR-0018)', () => {
+    const keys = APP_TABS.map(t => t.key)
+    expect(keys).not.toContain('coilTracker')
+    expect(keys).not.toContain('sales')
+    expect(APP_TABS[0].label).toBe('Dashboards')
+  })
 })
 
 describe('accessFor', () => {
@@ -3355,6 +3374,8 @@ describe('accessFor', () => {
     expect(a.readOnly).toEqual([])
     expect(a.plantSelector).toBe(true)
     expect(a.plant).toBe(ALL_PLANTS)
+    // #384: the Sales tab's FM / MM / SM sub-tab is an admin's screen.
+    expect(a.fmMmSmSubTab).toBe(true)
   })
 
   it('scopes a plant user to their own plant and offers no selector', () => {
@@ -3362,6 +3383,9 @@ describe('accessFor', () => {
     expect(accessFor(hyd).plantSelector).toBe(false)
     expect(accessFor(npmd).plant).toBe('npmd')
     expect(accessFor(npmd).plantSelector).toBe(false)
+    // #384: a plant login keeps the Sales tab but not its FM / MM / SM sub-tab.
+    expect(accessFor(hyd).fmMmSmSubTab).toBe(false)
+    expect(accessFor(npmd).fmMmSmSubTab).toBe(false)
   })
 
   it('hides Reports from a plant user and keeps it for an admin', () => {
@@ -3379,9 +3403,9 @@ describe('accessFor', () => {
     expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain('productionPlanning')
   })
 
-  it('gives a plant user the four viewing tabs', () => {
+  it('gives a plant user the viewing tabs', () => {
     const keys = keysOf(accessFor(hyd))
-    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'coilTracker', 'dispatch', 'sales']))
+    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'dispatch']))
   })
 
   it('offers the manufacturing tabs only to a plant that manufactures', () => {
@@ -3394,7 +3418,7 @@ describe('accessFor', () => {
     expect(plantById(NEVER_MANUFACTURES.id, MASTER_WITH_FICTIONAL_PLANTS)?.manufactures).toBe(false)
     mfg.forEach(k => expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).not.toContain(k))
     // …but it keeps everything that is not a shop-floor stage.
-    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'sales', 'orders']))
+    expect(keysOf(accessFor(nonManufacturing, MASTER_WITH_FICTIONAL_PLANTS))).toEqual(expect.arrayContaining(['dashboard', 'orders']))
   })
 
   it('keeps an admin’s manufacturing tabs regardless of the selected plant', () => {
@@ -3433,12 +3457,16 @@ describe('accessFor', () => {
       const a = accessFor({ role: 'plant', plant: p })
       expect(a.tabs).toEqual([])
       expect(a.plantSelector).toBe(false)
+      expect(a.fmMmSmSubTab).toBe(false)
     })
   })
 
   it('grants nothing for an unknown, missing or empty role', () => {
     ;[{ role: 'superuser', plant: 'hyderabad' }, { role: '', plant: 'hyderabad' }, {}, null, undefined]
-      .forEach(s => expect(accessFor(s).tabs).toEqual([]))
+      .forEach(s => {
+        expect(accessFor(s).tabs).toEqual([])
+        expect(accessFor(s).fmMmSmSubTab).toBe(false)   // #384: NO_ACCESS grants no sub-tab either
+      })
   })
 
   it('offers Coil Inward only to a plant on the rollout list, not merely one that manufactures', () => {
@@ -4472,9 +4500,9 @@ describe('buildDispatchRecords — per-entry fields stay inside bundleEntries', 
 
 describe('buildDispatchRecords — the FIFO coil trace is inherited, never picked', () => {
   const productions = [
-    { id: 'P1', deleted: false, skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-01',
+    { id: 'P1', deleted: false, plant: 'hyderabad', skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-01',
       coilAllocations: [{ babyCoilId: 'BC-1', hrCoilId: 'HR-1', pieces: 60, weight: 0.6 }] },
-    { id: 'P2', deleted: false, skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-05',
+    { id: 'P2', deleted: false, plant: 'hyderabad', skuCode: INV_SKU_A.skuCode, dateOfProduction: '2026-08-05',
       coilAllocations: [{ babyCoilId: 'BC-2', hrCoilId: 'HR-2', pieces: 60, weight: 0.6 }] },
   ]
 
@@ -4804,12 +4832,12 @@ describe('buildInvoiceDispatches — grouping and de-duplication', () => {
 describe('buildInvoiceDispatches — the FIFO coil trace counts what survives the window', () => {
   it('starts after the dispatches outside the window, so September cannot re-allocate August coils', () => {
     const production = {
-      id: 'P1', deleted: false, dateOfProduction: '2026-07-01', skuCode: INV_SKU_A.skuCode, pieces: 150,
+      id: 'P1', deleted: false, plant: 'hyderabad', dateOfProduction: '2026-07-01', skuCode: INV_SKU_A.skuCode, pieces: 150,
       coilAllocations: [{ babyCoilId: 'BC-1', hrCoilId: 'HR-1', pieces: 150, weight: 1.5 }],
     }
     const august = {
       id: 'OLD', deleted: false, dateOfDispatch: '2026-08-02', invoiceNo: 'AUG-1',
-      bundleEntries: [{ invoiceNo: 'AUG-1', skuCode: INV_SKU_A.skuCode, pieces: 100, weight: 1 }],
+      bundleEntries: [{ invoiceNo: 'AUG-1', skuCode: INV_SKU_A.skuCode, pieces: 100, weight: 1, plant: 'hyderabad' }],
     }
     const out = buildZoho([zohoRow({ 'Quantity': 0.5 })], { productions: [production], dispatches: [august] })
     // 150 produced − 100 already dispatched in August = 50 left for this September line.
@@ -10911,5 +10939,98 @@ describe('Not made in region — one rule in the calculation layer (#353)', () =
     const plan = planningWeekPlanView({ month: '2026-11', regions: [g] }).regions[0]
     expect(plan.unplaced.notMade).toEqual({ tonnes: 12, rows: ['SHS 25x25 5.0'] })
     expect(plan.unplaced.noPlant.rows).not.toContain('SHS 25x25 5.0')
+  })
+})
+
+import { planningBlendedRate, planningMoveTags, planningCoverDays, planningMovesCover, planningMasterView as moversMasterView } from './calc'
+
+describe('Moves and Cover (#375 — rules #370–#373)', () => {
+  it('blended rate: 10/30/30/30 of nested window averages, a window with no months adds 0', () => {
+    // last month 20, last 3 = 60 (avg 20), last 6 = 120 (avg 20), last 12 = 240 (avg 20) → 20
+    expect(planningBlendedRate({ 1: 20, 3: 60, 6: 120, 12: 240 }, { 1: 1, 3: 3, 6: 6, 12: 12 })).toBeCloseTo(20, 9)
+    // South: 12-month window clipped to 31-Mar-2026 is 7.03 months, not 12
+    expect(planningBlendedRate({ 1: 10, 3: 30, 6: 60, 12: 140 }, { 1: 1, 3: 3, 6: 6, 12: 7 }))
+      .toBeCloseTo(0.1 * 10 + 0.3 * 10 + 0.3 * 10 + 0.3 * 20, 9)
+    expect(planningBlendedRate({ 1: 5 }, { 1: 0, 3: 0, 6: 0, 12: 0 })).toBe(0)
+  })
+
+  it('FM / MM / SM: share ranked ABOVE the row; ties share a tag; under 0.05 is No sales', () => {
+    // total 100.04: a=50 (above 0 → FM), b=30 (above 50 → FM), c=d=6 (above 80, tie → both MM),
+    // e=5 (above 92 → SM), f=3 (above 97 → SM), g=0.04 → No sales
+    const tags = planningMoveTags([
+      { id: 'a', rate: 50 }, { id: 'b', rate: 30 }, { id: 'c', rate: 6 }, { id: 'd', rate: 6 },
+      { id: 'e', rate: 5 }, { id: 'f', rate: 3 }, { id: 'g', rate: 0.04 },
+    ])
+    expect([...tags.values()]).toEqual(['FM', 'FM', 'MM', 'MM', 'SM', 'SM', 'No sales'])
+  })
+
+  it('FM boundary: a row with exactly 70 % above it is MM, not FM', () => {
+    const tags = planningMoveTags([{ id: 'a', rate: 70 }, { id: 'b', rate: 20 }, { id: 'c', rate: 10 }])
+    expect(tags.get('a')).toBe('FM')
+    expect(tags.get('b')).toBe('MM')   // 70 above of 100 → not under 70 %
+    expect(tags.get('c')).toBe('SM')   // 90 above → not under 90 %
+  })
+
+  it('cover: stock ÷ (rate ÷ 30), bracket by class, number and word together', () => {
+    const c = planningCoverDays({ stock: 20, rate: 30, tag: 'FM' })   // 20 days
+    expect(c).toMatchObject({ kind: 'days', days: 20, bracket: 2, word: 'Healthy', label: 'Healthy · 20 d' })
+    expect(c.title).toBe('Stock now 20.0 MT / (30.0 / 30) = 20 days')
+    // the same 20 days is Thin for MM (10–20) and Healthy for SM
+    expect(planningCoverDays({ stock: 20, rate: 30, tag: 'MM' }).word).toBe('Thin')
+    expect(planningCoverDays({ stock: 20, rate: 30, tag: 'SM' }).word).toBe('Healthy')
+    // each bracket edge, FM: 6 | 7 … 14 | 15 … 45 | 46 … 75 | 76
+    const w = (d) => planningCoverDays({ stock: d, rate: 30, tag: 'FM' }).word
+    expect([6, 7, 14, 15, 45, 46, 75, 76].map(w)).toEqual(['Running out', 'Thin', 'Thin', 'Healthy', 'Healthy', 'Heavy', 'Heavy', 'Too much'])
+    const sm = (d) => planningCoverDays({ stock: d, rate: 30, tag: 'SM' }).word
+    expect([4, 5, 14, 15, 90, 91, 180, 181].map(sm)).toEqual(['Running out', 'Thin', 'Thin', 'Healthy', 'Healthy', 'Heavy', 'Heavy', 'Too much'])
+  })
+
+  it('cover edges: stock with no sales is No use; sales with no stock is 0 d Running out; neither is empty', () => {
+    expect(planningCoverDays({ stock: 12, rate: 0, tag: 'No sales' })).toMatchObject({ kind: 'noUse', label: 'No use' })
+    expect(planningCoverDays({ stock: 0, rate: 10, tag: 'FM' })).toMatchObject({ kind: 'days', days: 0, word: 'Running out', label: 'Running out · 0 d' })
+    expect(planningCoverDays({ stock: 0, rate: 0, tag: 'No sales' })).toMatchObject({ kind: 'none', label: '' })
+  })
+
+  // A small world: South = Hyderabad + Lepakshi, West = NPMD + Tapi (the plant master's own service areas).
+  const sku = (skuCode, h, thickness) => ({
+    skuCode, productType: 'SHS', height: h, breadth: h, thickness, length: 6000,
+    description: `MS SHS One Helix IS 4923 YSt 210 Black ${h}x${h}x${thickness}x6000`,
+  })
+  const skus = [sku('S50-16', 50, 1.6)]
+  const inv = (id, dateOfDispatch, entries) => ({ id, dateOfDispatch, bundleEntries: entries })
+  const e = (weight, plant) => ({ skuCode: 'S50-16', weight, pieces: 1, plant })
+  const productions = [{ id: 'P1', skuCode: 'S50-16', totalWeight: 100, tubeCount: 1, plant: 'hyderabad', dateOfProduction: '2026-06-01' }]
+  const dispatches = [
+    inv('D1', '2026-03-31', [e(10, 'hyderabad')]),   // South's first invoice
+    inv('D2', '2026-10-10', [e(31, 'hyderabad')]),   // last month
+    inv('D3', '2026-11-05', [e(500, 'hyderabad')]),  // current part-month: OUT of every window
+    inv('D4', '2026-10-20', [e(77, 'npmd')]),        // West's sale, never South's
+  ]
+  const TODAY = '2026-11-16'
+
+  it('region-level clipping and nested windows on a real row, West kept apart from South', () => {
+    const mc = planningMovesCover({ productions, dispatches, skus, today: TODAY })
+    expect(mc.byRegion.South.first).toBe('2026-03-31')
+    expect(mc.byRegion.South.months[12]).toBeCloseTo(1 / 31 + 7, 9)   // 31 Mar … 31 Oct
+    expect(mc.byRegion.South.months[1]).toBe(1)
+    // 31 in Oct (+10 in Mar, in the 12-month window only): 0.1·31 + 0.3·31/3 + 0.3·31/6 + 0.3·41/(7+1/31)
+    const m12 = 7 + 1 / 31
+    expect(mc.byRegion.South.rate).toBeCloseTo(0.1 * 31 + 0.3 * 31 / 3 + 0.3 * 31 / 6 + 0.3 * 41 / m12, 6)
+    // West: first invoice 20-Oct → windows hold 11 days of Oct → 11/31 months each, all 77 T in all four
+    expect(mc.byRegion.West.months[12]).toBeCloseTo(12 / 31, 9)
+    expect(mc.byRegion.West.rate).toBeCloseTo(77 / (12 / 31), 6)
+  })
+
+  it('both screens get the same figures from one rule; retired rows get none', () => {
+    const mv = moversMasterView({ productions, dispatches, skus, today: TODAY })
+    const r = mv.regions.find(g => g.region === 'South').rows.find(x => x.size === '50x50' && x.thickness === 1.6)
+    expect(r.moves).toMatchObject({ tag: expect.any(String) })
+    const mc = planningMovesCover({ productions, dispatches, skus, today: TODAY })
+    expect(r.moves).toEqual(mc.byRow[r.id].moves)
+    expect(r.cover).toEqual(mc.byRow[r.id].cover)
+    const cv = planningCampaignView({ productions, dispatches, skus, month: '2026-11', today: TODAY })
+    const cr = cv.regions.find(g => g.region === 'South').rows.find(x => x.id === r.id)
+    expect(cr.moves).toEqual(r.moves)
+    expect(cr.cover).toEqual(r.cover)
   })
 })

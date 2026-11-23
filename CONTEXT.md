@@ -284,8 +284,18 @@ Total T ÷ (Produced 30d ÷ 30), in whole days. Stock with no use in 30 days rea
 stock, not endless cover); a plant producing with no stock reads **0**. Worked the same way per
 **thickness bucket**.
 Finished pipe uses the same word: Current inventory ÷ (Invoiced 30d ÷ 30) — the heading says which stock
-(*FG days of cover*, *RM days of cover*).
+(*FG days of cover*, *RM days of cover*). On a planning-master row the rate is the **Blended monthly
+rate** instead of Invoiced 30d, and the stock is **stock now** (the Dashboard's FG for the row's
+region), not Open on the 1st: stock now ÷ (Blended monthly rate ÷ 30). The heading says *blended*.
 _Avoid_: stock days, runway, inventory days, days cover, Cover d, SKU cover
+
+**Coil days of cover** / **FG days of cover**:
+The two screen names of **Days of cover**, one per stock, so a reader never has to guess which.
+**Coil days of cover** is the raw-material one — HR + slit coil T ÷ (Produced 30d ÷ 30) — on the Coil
+Tracker (ADR-0018 renamed its "Days of cover" field and column). **FG days of cover** is finished pipe —
+Current inventory ÷ (Invoiced 30d ÷ 30) — on Plant drill; *FG days of cover (blended)* uses the Blended
+monthly rate. Same arithmetic, different stock and rate: never compare one with the other.
+_Avoid_: Days of cover (alone, on a screen), RM days of cover (on the dashboards)
 
 **Thickness bucket**:
 One of the seven standard raw-material thicknesses — **1.2 · 1.6 · 2.0 · 2.5 · 3.0 · 4.0 · 5.0 mm** —
@@ -320,6 +330,20 @@ the same figure. The Sales tab's distributor drill-down and the PB MTD workbook'
 card are a **different** figure — company-wide, and they subtract *Reserved* (the raw ERP Release −
 Invoiced, which ADR-0014 rejected) rather than Confirmed. Never reconcile the two.
 _Avoid_: Free Stock (retired, ADR-0017); available stock, uncommitted stock, ATP, sellable stock
+
+**Free in area**:
+The screen name of **Free Inventory** above on the Sales distributor drill-down (Dashboards › Sales ›
+Distributor, ADR-0018): Current inventory at the plants serving the distributor's area less that area's
+Confirmed. Its CSV header still says `Free Inventory (T)`, and the PB MTD workbook still says
+`Free Inventory (area)` — a spreadsheet looks those up by name.
+_Avoid_: Free Inventory (as a screen label)
+
+**Free after reserved**:
+The screen name of the *still open* figure above — the SKU-wise Inventory column on Dashboards ›
+Inventory › Activity: Current inventory − Reserved, one SKU, company-wide. A **different** figure from
+Free in area (it subtracts Reserved, not the area's Confirmed); the two names exist so they cannot be read
+as one. Its CSV header still says `Free Inventory (T)`.
+_Avoid_: Free Inventory, Free FG (as screen labels)
 
 **Free inventory, by plant**:
 What one named plant holds of one size **less its share of what the service area has already
@@ -358,17 +382,29 @@ _Avoid_: Shortfall, gap, deficit, unfulfillable
 
 ## Production planning
 
+**SKU**:
+One size × thickness × region that the plan and the Sales tab count and tag — a planning-master row,
+as the screens print it ("245 SKUs" in South on 16-Nov-2026). It is not a tube code: one SKU gathers
+every catalogue entry of that size and thickness band, whatever its length or type.
+_Avoid_: planning-master row (on screen), row, SKU master (that is the tube catalogue)
+
+**Tube catalogue**:
+The list of exact tube codes the plant makes, each with its type, size, thickness, length and
+**weight per tube** — the Masters tab's *SKU Master*. Its entries are tube codes, not SKUs; the tab and
+the code (`SKU.weightPerTube`) keep the old name.
+_Avoid_: SKU (that is the planning row above)
+
 **Planning master**:
 One row per size × thickness × region that at least one of that region's plants can make, saying
 whether the region holds it as Buffer or MTO, how much Buffer, and which plants can make it.
-_Avoid_: Inventory master, capability sheet, SKU master (that is the tube catalogue)
+_Avoid_: Inventory master, capability sheet, SKU master (that is the tube catalogue; a planning-master row is a **SKU**)
 
 **Thickness band**:
 The thickness a planning-master row is named by, which may gather more than one catalogue
 thickness — the 3.0 band holds both 3.0 mm and 3.2 mm tubes. A tube whose thickness has no band of
 its own rolls into the **nearest** band, and a tie goes to the heavier one: 2.8 and 2.9 mm count in
 3.0, 1.8 and 2.2 mm in 2.0. A band is a planning grouping; it never changes the thickness a tube
-carries in the SKU master.
+carries in the tube catalogue.
 _Avoid_: Matrix thickness, nominal thickness
 
 **Buffer**:
@@ -479,14 +515,92 @@ _Avoid_: Slit size, coil width (that is the HR coil's width)
 
 **Slit coil that fits**:
 A slit coil on hand that can make a given size: same plant, same Thickness band as the size, width
-within 5 mm of its **strip width**. Matched against every size in the SKU master, so a coil can fit a
+within 5 mm of its **strip width**. Matched against every size in the tube catalogue, so a coil can fit a
 size nobody has ordered. One coil can fit two sizes (147 mm: 38×38 and 50×25); it shows in both and is
-counted once in a total. HR coil is not cut, so it fits no size. On the Sales tab's grid this is
-**Raw material available**.
+counted once in a total. HR coil is not cut, so it fits no size. The Sales Dashboard's grid shows this
+(its Raw material chip, the "Slit coil that fits · plant" blocks): a shared coil sits in **every** size it fits.
+It is **not** Raw material available, which splits that coil.
 _Avoid_: Available coil (by thickness alone — it says coil is there where it cannot make the size)
+
+**Raw material available**:
+On the Sales tab's FM / MM / SM sub-tab only, a size × thickness cell's **share** of the slit coil that fits,
+after the split (`docs/ALGORITHMS.md`, "Raw material split"): single-size coils whole, each shared coil
+divided between its sizes. The cells add up to the coil counted once. So for one cell it can be **less** than
+the Dashboard's *Slit coil that fits* (147 mm coil: in both 38×38 and 50×25 there, a share in each here).
+A display-only allocation: it moves no coil and is not Planning's hand-out (which gives a coil whole to one
+row). The plant confirmed the method on 18-Nov-2026 (relayed by the owner).
+_Avoid_: Slit coil that fits (that counts a shared coil in every size), coil share
+
+**Raw material required**:
+On the Sales tab's FM / MM / SM sub-tab, what a size × thickness cell still has to get in as coil:
+Production required less Raw material available, worked out **one plant at a time** (a plant's coil
+covers only its own plant's Production required, never another plant's) and then added for the cell, so a
+cell can hold more coil than it needs and still need coil when the spare coil is at the other plant. A slit coil that
+fits several sizes is **split between them** — single-size coils placed first, each shared coil divided
+in proportion to what each size still needs of its Production required, never more than a size needs,
+any surplus shared equally — so the cells add up to the counted-once total (the prototype read South
+245.8 T, West 161.6 T on 16-Nov-2026; not yet re-checked live) instead of counting the coil in every size
+it fits. Ignores yield loss from coil to tube. The plant confirmed the split method on 18-Nov-2026.
+_Avoid_: Coil shortfall, RM gap
 
 **Need-by date**:
 The start of the first week whose planned tonnes the coil on hand cannot cover, once fitting slit
 coil and then HR coil of the band have been handed out in week order, one tonne of coil per tonne
 of tube. Coil not yet booked at Coil Inward is never counted. Guidance only: it reserves no coil.
 _Avoid_: Shortage date, coil due date, order date
+
+**Blended monthly rate**:
+How fast a planning-master row sells, in MT a month: 10 % of last month + 30 % of the last 3 months +
+30 % of the last 6 months + 30 % of the last 12 months, each a monthly average of invoiced MT. The
+windows are **nested** (October is in all four) and end at the last whole calendar month — the
+current part-month is out. "Sales" is invoice-entry weight at the **shipping plant**, landed on the
+row by the same rule as the Monthly campaign's *last* and *three* columns. A window is **clipped to
+the region's first invoice** (region-level, not plant-level), so the long windows read as an average
+since that invoice until the history is long enough; Planning's "Short history" note already says so.
+Compared unrounded; the figure shown is rounded for display only.
+_Avoid_: Run rate, velocity, average sales, demand
+
+**FM / MM / SM** (fast / medium / slow moving):
+The tag on a planning-master row, set **within its region** (South and West rank separately). Rank the
+region's rows by Blended monthly rate, biggest first; a row is **FM** while the share of tonnage
+ranked above it is under 70 %, **MM** while under 90 %, else **SM**. A row with a rate under 0.05
+MT a month is not SM but **No sales**, a fourth, dim label (so SM means "sells a little"; on
+16-Nov-2026 that is 38 South / 22 West rows, against 128 / 177 rows with no sales). Rows with the
+same rate get the same tag. It describes sales only: it changes no Buffer and no Planned production.
+Every live master row is tagged the same way: **Buffer and MTO alike**, a row **no plant can make**
+too, and a row with only a month or two of sales (no "New" label — Planning's *Short history* note is
+the caveat). A **retired** row and an **Outside the plan** line are not rows, so they get no tag and
+their tonnes sit outside the ranking.
+_Avoid_: ABC (that is the 2g stock-snapshot rule on 90-day MT, which this one mirrors but does not
+replace), fast/slow seller, movement class
+
+**Cover bracket**:
+The colour a planning-master row's FG days of cover (blended) takes, set by the row's **FM / MM / SM**
+class — the same day count means different things to a fast row and a slow one. Five brackets, low
+stock to high, the number and the word always printed beside the colour:
+
+| Bracket (colour) | FM | MM | SM |
+|---|---|---|---|
+| **Running out** (red) | under 7 d | under 10 d | under 5 d |
+| **Thin** (orange) | 7–14 d | 10–20 d | 5–14 d |
+| **Healthy** (green) | 15–45 d | 21–60 d | 15–90 d |
+| **Heavy** (purple) | 46–75 d | 61–90 d | 91–180 d |
+| **Too much** (black) | over 75 d | over 90 d | over 180 d |
+
+Stock with no sales reads **No use**, as for raw material. Cut-offs are a first setting chosen by
+eye on the 16-Nov-2026 spread; they are the user's to change.
+A **narrow** cell is one under **120 px** (decided at the #384 screenshot, 1366 × 768): the width
+the word, days and tag together need (`Running out · 12 d FM`). A narrow cell prints only the whole
+days and the tag (`7 d FM`), the word on hover and in the key. With several thicknesses on screen the
+Sales tab's FM / MM / SM view cells are about 70–80 px, so that view always uses the narrow form (even
+when a grid with one thickness stretches its cells wider); the Planning columns and the lists print the word.
+_Avoid_: ageing band (that is days since production), stock status, health
+
+**Untagged cell**:
+On the Sales tab's FM / MM / SM sub-tab, a cell of the Size × Thickness grid that holds stock or orders
+but no tagged **SKU** — a retired master row, a size outside the plan, or a tube whose own thickness the
+grid files in another column than the planning band does. It shows the grid's own Closing stock, Dispatch
+and Pending to Dispatch and no tag, so the tagged cells plus the untagged cells always add up to the grid.
+A **SKU** that lands on no cell is **not shown**, and says why: *no stock and no orders*, or *no cell for
+this size or thickness*. Neither is ever dropped.
+_Avoid_: Unmapped cell (Unmapped is a distributor with no region), orphan, leftover

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react'
 import { useSupabaseStore, verifyLoginDetails, failedLoads } from './lib/db'
 import {
   fmtT, fmtT3, fmtTonnes, fmtTypedTonnes, genHRCoilId, nextCoilNumber, tolerance, periodRange, inDateRange,
@@ -8,6 +8,10 @@ import {
   rmRollsFg, capAllocationRows, requiredStripWidth, WIDTH_TOL_MM, isOpenOrderStatus, skuInventoryRows, skuSizeLabel,
   canonicalSkuKey, salesKpis, salesByDistributor, salesByMonth,
   salesSizeLines, salesSizePivot, salesGridOptions, filterSalesLines, salesGridCellKey, salesGridOrder, SALES_GRID_REQUIRED, SALES_GRID_STOCK, SALES_GRID_SALES, SALES_GRID_MEASURES, SALES_GRID_AGEING, addDaysIso,
+  fmMmSmFeed, fmMmSmJoin, fmMmSmCut, fmMmSmCellLabel, fmMmSmNotShownReason, PLANNING_COVER_BRACKETS, PLANNING_COVER_WORDS,
+  fmMmSmStatusBoxes, fmMmSmStatusCut, fmMmSmStatusLines, fmMmSmStatusTagRows,
+  fmMmSmWorklists, FM_MM_SM_NO_STOCK_MARK, fmMmSmRawMaterial, fmMmSmRequiredByPlant, fmMmSmRawRows, fmMmSmRawBySection, fmMmSmBracketLimits, fmMmSmGridSize, fmMmSmStatusLabel,
+  fmMmSmTagSections, FM_MM_SM_OUTSIDE,
   shippedByOrderLine, orderLineInvoiced, orderLineStage, distributorCode, toISODate,
   DISTRIBUTOR_HEADER_ALIASES, buildInvoiceDispatches, dispatchLinesOutsideWindow,
   resolveShipToState, REGIONS, UNMAPPED_REGION, normStateName,
@@ -254,7 +258,8 @@ const SearchInput = ({ value, onChange, placeholder = 'Search...', className = '
 
 // Multi-value filter dropdown (tick several options at once). `selected` is an array;
 // an empty array means "All". Used by DataTable's `filters`. Closes on outside click.
-const MultiSelectFilter = ({ label, options, selected, onChange }) => {
+// `compact`: the dashboards' 32 px control height (ADR-0018); elsewhere the filter keeps its own size.
+const MultiSelectFilter = ({ label, options, selected, onChange, compact = false }) => {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
   const btn = useRef(null)
@@ -269,7 +274,7 @@ const MultiSelectFilter = ({ label, options, selected, onChange }) => {
   return (
     <div className="relative" ref={ref}>
       <button type="button" onClick={() => setOpen(o => !o)}
-        className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100 flex items-center gap-1 whitespace-nowrap">
+        className={`px-3 ${compact ? 'h-8' : 'py-2'} rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100 flex items-center gap-1 whitespace-nowrap`}>
         {summary} <span className="text-slate-400">▾</span>
       </button>
       {open && (
@@ -288,6 +293,29 @@ const MultiSelectFilter = ({ label, options, selected, onChange }) => {
             ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// A button that opens a panel over the page (closes on an outside click or Escape). `on` paints the button selected.
+// Used by the FM / MM / SM sub-tab's Key (#390) and its More chips (#391); `children` is a node or `close => node`.
+const PopMenu = ({ label, on = false, children, className = '' }) => {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = e => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc); document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
+  }, [open])
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" aria-haspopup="true" aria-expanded={open} aria-pressed={on} onClick={() => setOpen(o => !o)}
+        className={`px-3 h-8 rounded-md border text-sm whitespace-nowrap ${DASH_RING} ${on ? 'border-indigo-600 bg-indigo-600 text-white font-semibold' : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+        {label} <span aria-hidden="true">▾</span>
+      </button>
+      {open && <div className={`absolute z-30 mt-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-lg ${className}`}>{typeof children === 'function' ? children(() => setOpen(false)) : children}</div>}
     </div>
   )
 }
@@ -1580,7 +1608,13 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
 
   return (
     <div className="space-y-6">
-      <Section title="Daily Dispatch — plants" actions={<Btn size="sm" variant="ghost" onClick={downloadPlantsCSV}>⬇ Plants CSV</Btn>}>
+      <DashControls scope={scopeName} asOf={fmtIso(ov.date)} exports={() => [
+        { label: 'Plants CSV', run: downloadPlantsCSV },
+        { label: 'Areas CSV', run: downloadRegionsCSV },
+        { label: 'Short CSV', run: downloadShortCSV, disabled: !ov.short.regions.length },
+        { label: 'Distributors CSV', run: downloadDistributorsCSV, disabled: !ov.distributors.length, note: 'As filtered and sorted on screen' },
+      ]} />
+      <DashBlock title="Daily Dispatch — plants">
         <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-md">
           <table className="min-w-full text-sm" aria-label="Dispatch by plant">
             <thead>
@@ -1617,21 +1651,15 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
           Oldest pending counts only lines still holding Confirmed, netted against invoices already raised.
         </p>
         <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
-      </Section>
+      </DashBlock>
 
-      <Section title={`Dispatchable from Inventory by service area — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadRegionsCSV}>⬇ Areas CSV</Btn>}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {ov.regions.tiles.map(t => (
-            <div key={t.region} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
-              <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">{t.known ? t.region : `${t.region} (no region)`}</div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{fmtKnown(t.pendingToDispatch)} T</div>
-              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 tabular-nums">
-                Confirmed {fmtT(t.confirmed)} + Servable – Unconfirmed {fmtKnown(t.servableUnconfirmed)}
-              </div>
-            </div>
-          ))}
-          {ov.regions.tiles.length === 0 && <p className="text-sm text-slate-400">Nothing pending.</p>}
-        </div>
+      <DashBlock title={`Dispatchable from Inventory by service area — ${scopeName}`}>
+        {ov.regions.tiles.length ? (
+          <KpiStrip label="Dispatchable from Inventory by service area" items={ov.regions.tiles.map(t => ({
+            label: t.known ? t.region : `${t.region} (no region)`, value: fmtKnown(t.pendingToDispatch), unit: 'T',
+            sub: `Confirmed ${fmtT(t.confirmed)} + Servable – Unconfirmed ${fmtKnown(t.servableUnconfirmed)}`,
+          }))} />
+        ) : <p className={DASH_EMPTY}>Nothing pending.</p>}
         <p className={`mt-3 text-sm tabular-nums ${rec.ties ? 'text-slate-600 dark:text-slate-300' : 'text-red-600 dark:text-red-400'}`}>
           Plant Confirmed {fmtT(rec.plantConfirmed)} = {rec.regions.map(g => `${g.region} ${fmtT(g.confirmed)}`).join(' + ') || '0.0'};
           {' '}<strong>{fmtT(rec.outOfArea)} T booked out of area</strong>{rec.outOfAreaLines ? ` (${rec.outOfAreaLines} line${rec.outOfAreaLines === 1 ? '' : 's'})` : ''}.
@@ -1639,17 +1667,17 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
         </p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
           Dispatchable from Inventory = Confirmed + Servable – Unconfirmed: what is owed and already on the floor of the plants serving that region.
-          Tiles group by the distributor’s region; the plant table groups by ship-from plant — the out-of-area tonnage is the difference.
+          The figures above group by the distributor’s region; the plant table groups by ship-from plant — the out-of-area tonnage is the difference.
         </p>
-      </Section>
+      </DashBlock>
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
-        <div className="xl:col-span-2"><Section title={`Short — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadShortCSV} disabled={!ov.short.regions.length}>⬇ Short CSV</Btn>}>
+        <div className="xl:col-span-2"><DashBlock title={`Short — ${scopeName}`}>
           <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
             Sizes where the region’s pending (Confirmed + Non-confirmed) exceeds the region’s on-hand stock — South is Hyderabad + Lepakshi,
             West is NPMD + Tapi. Biggest gap first.
           </p>
-          {ov.short.regions.length === 0 && <p className="text-sm text-slate-400">No size is short.</p>}
+          {ov.short.regions.length === 0 && <p className={DASH_EMPTY}>No size is short.</p>}
           {ov.short.regions.map(g => (
             <div key={g.region} className="mb-4">
               <div className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-200">{g.region} — {g.rows.length} size{g.rows.length === 1 ? '' : 's'}, {fmtT(g.total)} T short</div>
@@ -1684,15 +1712,15 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
               {showAllShort ? `Show top ${ov.short.topN} per region` : 'Show all'}
             </Btn>
           )}
-        </Section></div>
+        </DashBlock></div>
 
-        <div className="xl:col-span-3"><Section title={`Distributors — ${scopeName}`} actions={<Btn size="sm" variant="ghost" onClick={downloadDistributorsCSV} disabled={!ov.distributors.length}>⬇ Distributors CSV</Btn>}>
+        <div className="xl:col-span-3"><DashBlock title={`Distributors — ${scopeName}`}>
           <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
             Oldest pending first. A distributor with no mapped region reads <strong>?</strong> — map its state on the Sales tab.
           </p>
           <DataTable columns={distCols} data={ov.distributors} exportRef={distExportRef} excel maxHeight="32rem" totalsLabel="TOTAL" />
           <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{thresholdLine}</p>
-        </Section></div>
+        </DashBlock></div>
       </div>
     </div>
   )
@@ -1706,8 +1734,7 @@ function DispatchOverview({ orders, dispatches, productions, skus, compareOrders
 // The overview props (#232) arrive under their own names: `orders`/`productions` are header-scoped
 // like `dispatches`; `compare*`/`comparePlant` are what the plant table reads (see DispatchOverview).
 function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false, canWiden = true,
-  orders = [], productions = [], compareOrders = null, compareDispatches = null, comparePlant = null,
-  stateRegions = [], plants = [], distributors = [], selectedPlant = ALL_PLANTS }) {
+}) {
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // Soft-deletes the WHOLE invoice record, by id, in the raw store — `dispatches` here may be a
@@ -1781,9 +1808,7 @@ function Dispatch({ dispatches, setDispatches, coils, skus, plantScoped = false,
         <Btn variant="ghost" onClick={downloadDispatchRecordsCSV} disabled={dispatches.filter(d => !d.deleted).length === 0}>⬇ Download CSV</Btn>
       </div>
 
-      <DispatchOverview orders={orders} dispatches={dispatches} productions={productions} skus={skus}
-        compareOrders={compareOrders ?? orders} compareDispatches={compareDispatches ?? dispatches} comparePlant={comparePlant}
-        stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />
+      {/* The plant summary that sat here is Dashboards › Sales › Dispatch now (ADR-0018). */}
 
       <p className="text-xs text-slate-400">
         Dispatch (invoice) data is loaded from the daily <strong>Upload Invoice Excel</strong> on the
@@ -2235,6 +2260,8 @@ const CELL_FLAG = { red: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-r
 // over the CSV's red / amber / green (docs/UI-PATTERNS.md, #303) — the file stays byte-identical.
 // `groups` (#303) adds a header row above the columns ([{ label, span }]); a column with `rule` draws a
 // thin line before itself, so a group reads as one. `dense` is the 28 px row of the #302 sheet.
+// Dashboards print T as the only unit (ADR-0018); a column's `label` stays as it is because the CSVs use it.
+const screenT = (l) => typeof l === 'string' ? l.replace(/\bMT\b/g, 'T') : l
 function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothing to show.', groups = null, dense = false }) {
   if (!rows.length) return <p className="text-sm text-slate-400 py-3">{empty}</p>
   const rule = (c) => c.rule ? 'border-l border-slate-200 dark:border-slate-600' : ''
@@ -2245,11 +2272,11 @@ function FlatTable({ label, cols, rows, rowKey, rowClass, onRow, empty = 'Nothin
           {groups && (
             <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
               {groups.map((g, i) => <th key={i} colSpan={g.span} scope="colgroup"
-                className={`px-3 pt-1.5 font-semibold whitespace-nowrap text-center ${i ? 'border-l border-slate-200 dark:border-slate-600' : ''}`}>{g.label}</th>)}
+                className={`px-3 pt-1.5 font-semibold whitespace-nowrap text-center ${i ? 'border-l border-slate-200 dark:border-slate-600' : ''}`}>{screenT(g.label)}</th>)}
             </tr>
           )}
           <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-200">
-            {cols.map((c, i) => <th key={c.label} className={`px-3 ${dense ? 'h-8 py-0' : 'py-2'} font-semibold whitespace-nowrap ${rule(c)} ${c.left || i === 0 ? 'text-left' : 'text-right'}`}>{c.label}</th>)}
+            {cols.map((c, i) => <th key={c.label} className={`px-3 ${dense ? 'h-8 py-0' : 'py-2'} font-semibold whitespace-nowrap ${rule(c)} ${c.left || i === 0 ? 'text-left' : 'text-right'}`}>{screenT(c.label)}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -2274,6 +2301,10 @@ const flatCSV = (filename, cols, rows) => downloadCSV(filename, cols.map(c => c.
 // tabs, a segmented switch, a strip of plain numbers between thin rules, a plain block (no card,
 // no shadow) whose scope is a visible line, status as a word with a red dot on Act only.
 const DASH_RING = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'
+// Every folded help line on the dashboards ("How …", "About …") reads the same: grey, the native ▸ marker.
+// One empty-state line on every dashboard: a grey sentence, left-aligned, readable contrast.
+const DASH_EMPTY = 'py-4 text-sm text-slate-500 dark:text-slate-400'
+const HELP_SUMMARY = `w-max cursor-pointer select-none font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded ${DASH_RING}`
 function ScreenTabs({ label, tabs, value, onChange }) {
   return (
     <div role="group" aria-label={label} className="flex flex-wrap gap-x-6 gap-y-1 text-sm border-b border-slate-200 dark:border-slate-700">
@@ -2296,7 +2327,7 @@ function Segmented({ label, options, value, onChange, role = null }) {
         const a11y = role === 'tablist' ? { role: 'tab', 'aria-selected': on } : { 'aria-pressed': on }
         return (
           <button key={String(key)} type="button" {...a11y} onClick={() => onChange(key)}
-            className={`px-3 py-1 ${i ? 'border-l border-slate-300 dark:border-slate-600' : ''} ${DASH_RING} ${on
+            className={`px-3 h-[30px] whitespace-nowrap ${i ? 'border-l border-slate-300 dark:border-slate-600' : ''} ${DASH_RING} ${on
               ? 'bg-indigo-600 text-white font-semibold' : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
             {name}
           </button>
@@ -2305,15 +2336,24 @@ function Segmented({ label, options, value, onChange, role = null }) {
     </div>
   )
 }
-// items: [{ label, value, unit, sub }]. `value` is the same text the table beside it prints.
+// items: [{ label, value, unit, sub, tone, onClick, go }]. `value` is the same text the table beside it prints.
+// `onClick` makes the figure a link to its detail screen (`go` names it, for the hover and screen readers).
 function KpiStrip({ label, items }) {
+  // Dense console (look C, owner 20-Nov-2026): the figures on one line. A text `sub` is the figure's hover;
+  // a sub that carries a mark (Overview's status word) stays on the line, small.
   return (
-    <dl aria-label={label} className="grid grid-cols-2 lg:grid-cols-4 gap-y-3 border-y border-slate-200 dark:border-slate-700 py-3 lg:divide-x divide-slate-200 dark:divide-slate-700 tabular-nums">
-      {items.map((k, i) => (
-        <div key={k.label} className={i === 0 ? 'pr-4' : 'px-4'}>
-          <dt className="text-sm text-slate-500 dark:text-slate-400">{k.label}</dt>
-          <dd className="text-2xl font-semibold text-slate-900 dark:text-white">{k.value}{k.unit && <span className="ml-1 text-sm font-normal text-slate-500 dark:text-slate-400">{k.unit}</span>}</dd>
-          {k.sub && <dd className="text-xs text-slate-500 dark:text-slate-400">{k.sub}</dd>}
+    <dl aria-label={label} className="flex flex-wrap items-baseline gap-x-5 gap-y-1 border-y border-slate-200 dark:border-slate-700 py-1.5 text-sm tabular-nums">
+      {items.map(k => (
+        <div key={k.label} className="flex items-baseline gap-1.5" title={typeof k.sub === 'string' ? k.sub : undefined}>
+          <dt className="text-slate-500 dark:text-slate-400">{k.label}</dt>
+          <dd className={`font-semibold ${k.tone || 'text-slate-900 dark:text-white'}`}>
+            {k.onClick
+              ? <button type="button" onClick={k.onClick} title={`Open ${k.go}`} aria-label={`${k.label}: ${k.value}${k.unit ? ` ${k.unit}` : ''} — open ${k.go}`}
+                  className={`underline decoration-slate-300 dark:decoration-slate-600 underline-offset-4 hover:decoration-indigo-500 rounded ${DASH_RING}`}>{k.value}</button>
+              : k.value}
+            {k.unit && <span className="ml-1 font-normal text-slate-500 dark:text-slate-400">{k.unit}</span>}
+          </dd>
+          {k.sub && typeof k.sub !== 'string' && <dd className="text-xs text-slate-500 dark:text-slate-400">{k.sub}</dd>}
         </div>
       ))}
     </dl>
@@ -2323,7 +2363,7 @@ function DashBlock({ title, scope, actions, children }) {
   return (
     <section aria-label={title} className="space-y-2 min-w-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h3 className="text-base font-semibold text-slate-900 dark:text-white">{title}</h3>
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h3>
         <div className="flex flex-wrap items-center gap-2 text-xs">{actions}</div>
       </div>
       {scope && <p className="text-xs text-slate-600 dark:text-slate-300">{scope}</p>}
@@ -2339,8 +2379,10 @@ const StatusWord = ({ status }) => (
 )
 // One Export menu for every CSV the Dashboard makes (#303): each item runs the export it replaced,
 // unchanged, so a file is byte-identical to the old button's. items: [{ label, run, disabled, note }].
-function ExportMenu({ items }) {
+// `items` may be a function: it is read when the menu opens, so a screen's refs (filters, sort) are current.
+function ExportMenu({ items: given }) {
   const [open, setOpen] = useState(false)
+  const items = open ? (typeof given === 'function' ? given() : given) : []
   const ref = useRef(null)
   const btn = useRef(null)
   useEffect(() => {
@@ -2354,11 +2396,12 @@ function ExportMenu({ items }) {
   return (
     <div ref={ref} className="relative">
       <button ref={btn} type="button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}
-        className={`px-3 py-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 ${DASH_RING}`}>
+        className={`px-3 h-8 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 ${DASH_RING}`}>
         Export ▾
       </button>
       {open && (
         <div role="menu" aria-label="Export" className="absolute right-0 z-40 mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 py-1 text-sm">
+          {!items.length && <p className="px-3 py-1.5 text-slate-500 dark:text-slate-400">Nothing to export on this screen.</p>}
           {items.map(it => (
             <button key={it.label} type="button" role="menuitem" disabled={it.disabled}
               onClick={() => { setOpen(false); it.run() }}
@@ -2372,7 +2415,25 @@ function ExportMenu({ items }) {
     </div>
   )
 }
-const DASH_SCREENS = [['overview', 'Overview'], ['drill', 'Plant drill'], ['movement', 'Stock movement'], ['tracker', 'Plant-wise Tracker'], ['sales', 'Sales & activity']]
+
+// One control row per dashboard (ADR-0018): scope and "as of" on the left; the dashboard's own filters and
+// its one Export menu on the right. `note` is a second, smaller line under the scope (e.g. a period).
+// Pinned under the dashboard tabs while the screen scrolls (`--dash-top2`, set by Dashboards).
+function DashControls({ scope, asOf, note, exports, children }) {
+  return (
+    <div className="sticky z-30 py-2 flex flex-wrap items-end justify-between gap-3 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700"
+      style={{ top: 'var(--dash-top2, 0px)' }}>
+      <div className="text-xs text-slate-500 dark:text-slate-400">
+        <p><strong className="text-slate-800 dark:text-slate-100">{scope}</strong>{asOf && <> · as of <strong>{asOf}</strong></>}</p>
+        {note && <p>{note}</p>}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        {children}
+        {exports && <ExportMenu items={exports} />}
+      </div>
+    </div>
+  )
+}
 
 // ── Drill-panel filters. Each tab has its own; a filter is a way of LOOKING — totals are rebuilt
 // from the rows kept (`sumGridRows`), never left at the unfiltered figure. Empty selection = all.
@@ -2396,7 +2457,7 @@ function DrillFilters({ defs, values, onChange }) {
     <div className="mb-3 flex flex-wrap items-center gap-2">
       {defs.map(f => (
         <MultiSelectFilter key={f.key} label={f.label} options={f.options} selected={values[f.key] || []}
-          onChange={v => onChange({ ...values, [f.key]: v })} />
+          onChange={v => onChange({ ...values, [f.key]: v })} compact />
       ))}
       {active && <Btn size="sm" variant="ghost" onClick={() => onChange({})}>Clear filters</Btn>}
     </div>
@@ -2411,11 +2472,10 @@ const DRILL_TABS = [
 
 function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, skus,
   compareCoils, compareBabyCoils, compareProductions, compareDispatches, comparePlant = null,
-  plants = PLANTS, selectedPlant = ALL_PLANTS, screens = {}, exports = [] }) {
+  plants = PLANTS, selectedPlant = ALL_PLANTS, screens = {}, exports = [],
+  screen = 'overview', drillTab = '2b', onNavigate = () => {} }) {
   const todayStr = today()
-  // #303: the Dashboard's screen tab, a UI preference kept on this device (`jsw:dashScreen`), never data.
-  const [screen, setScreenState] = useState(() => { const v = LS.get('jsw:dashScreen'); return DASH_SCREENS.some(([k]) => k === v) ? v : 'overview' })
-  const setScreen = (k) => { setScreenState(k); try { LS.set('jsw:dashScreen', k) } catch { /* storage blocked: the tab still switches */ } }
+  // The screen and the drill view are picked by the Dashboards tabs (ADR-0018); this component only shows them.
   // The region switch narrows the Overview's comparison rows to the plants serving that region
   // (`plants.serves`); its total is the All total run on those rows (`inventoryRegionStock`).
   const [region, setRegion] = useState(INVENTORY_ALL_REGIONS)
@@ -2426,7 +2486,6 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   const headerPlant = selectedPlant === ALL_PLANTS ? null : selectedPlant
   const [picked, setPicked] = useState(null)
   const drillPlant = headerPlant ?? picked
-  const [drillTab, setDrillTab] = useState('2b')
   // Filters per drill tab ({ [tab]: { [key]: [values] } }) and the FG families opened into their
   // thicknesses. Both reset when the panel moves to another plant — its options differ.
   const [drillFilters, setDrillFilters] = useState({})
@@ -2519,8 +2578,8 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     return rows.length ? [...rows, { cells: sum.cells, total: sum.total, isTotal: true }] : []
   }
   const coilGrids = d ? [
-    { key: 'hr', title: 'HR coil MT by thickness × age', label: 'HR coil by thickness and age', empty: 'No HR coil in stock.', cols: coilGridCols(d.hrGrid), rows: coilGridView(d.hrGrid) },
-    { key: 'slit', title: 'Slit coil MT by thickness × age', label: 'Slit coil by thickness and age', empty: 'No slit coil in stock.', cols: coilGridCols(d.slitGrid), rows: coilGridView(d.slitGrid) },
+    { key: 'hr', title: 'HR coil T by thickness × age', label: 'HR coil by thickness and age', empty: 'No HR coil in stock.', cols: coilGridCols(d.hrGrid), rows: coilGridView(d.hrGrid) },
+    { key: 'slit', title: 'Slit coil T by thickness × age', label: 'Slit coil by thickness and age', empty: 'No slit coil in stock.', cols: coilGridCols(d.slitGrid), rows: coilGridView(d.slitGrid) },
   ] : []
 
   // 2b — FG by family; a family opens into its thicknesses. Under a Thickness filter a family is the
@@ -2654,7 +2713,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: 'Coil (HR + slit)', text: r => fmtT(r.coil) },
     { label: 'FG (produced − invoiced)', text: r => fmtT(r.fg) },
   ]
-  const inputCls = 'px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
+  const inputCls = 'px-2 h-8 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
   const link = `text-indigo-700 dark:text-indigo-300 underline decoration-dotted underline-offset-2 hover:text-indigo-900 dark:hover:text-indigo-100 rounded ${DASH_RING}`
 
   // ── #303 layout: everything below READS what is above; nothing new is computed in here. ──
@@ -2681,7 +2740,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
     { label: `> ${th.fgOldDays} d`, text: sc[`FG > ${th.fgOldDays} d`].text, cls: r => bold(r.fgOver75) },
     { label: 'Cover (d)', text: sc['Cover (d)'].text },
   ]
-  const stockGroups = [{ label: '', span: 2 }, { label: 'Coil (MT)', span: 6 }, { label: 'Current inventory (MT)', span: 3 }]
+  const stockGroups = [{ label: '', span: 2 }, { label: 'Coil (T)', span: 6 }, { label: 'Current inventory (T)', span: 3 }]
   const regionPlants = regionNarrowed ? regionView.rows.map(r => r.name).join(', ') || 'no plant serves it' : ''
   const stockScope = comparePlant != null ? 'This table shows your plant only.'
     : `This table covers all plants regardless of the header plant selector.${regionNarrowed ? ` Region ${region}: ${regionPlants}.` : ''}`
@@ -2694,7 +2753,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
   const NEEDS_TEXT = { coilOld: `coil past ${th.coilOldDays} days`, fgOld: `current inventory past ${th.fgOldDays} days`, slitWait: `slit coil waiting ${th.slitWaitDays}+ days` }
   const needs = inventoryNeedsLook(regionView.rows)
   const tabName = (key) => DRILL_TABS.find(t => t.key === key)?.label || key
-  const openDrill = (plant, tab) => { if (headerPlant == null) setPicked(plant); if (tab) setDrillTab(tab); setScreen('drill') }
+  const openDrill = (plant, tab) => { if (headerPlant == null) setPicked(plant); onNavigate('drill', tab || drillTab) }
   const drillPick = ov.stock.rows.filter(canDrill)
 
   const exportItems = [
@@ -2710,14 +2769,8 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
 
   return (
     <div className="space-y-4 text-slate-700 dark:text-slate-200">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Dashboard</h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Stock and ageing are <strong>as of {fmtIso(ov.to)}</strong>; movement runs <strong>{fmtIso(ov.from)} → {fmtIso(ov.to)}</strong>.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
+      <DashControls scope={selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant)} asOf={fmtIso(ov.to)}
+        note={<>Movement runs <strong>{fmtIso(ov.from)} → {fmtIso(ov.to)}</strong>.</>} exports={exportItems}>
           {screen === 'overview' && showRegion && (
             <Segmented label="Region" value={region} onChange={setRegion}
               options={[[INVENTORY_ALL_REGIONS, 'All'], ...regions.map(r => [r, r])]} />
@@ -2730,11 +2783,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
               <input type="date" aria-label="To" value={to} min={from} max={todayStr} onChange={e => e.target.value && setTo(e.target.value)} className={inputCls} />
             </div>
           )}
-          <ExportMenu items={exportItems} />
-        </div>
-      </div>
-
-      <ScreenTabs label="Dashboard screen" tabs={DASH_SCREENS} value={screen} onChange={setScreen} />
+      </DashControls>
 
       {/* Every screen stays mounted and is only hidden, so each export reads the screen's own state
           (filters, sort, the open drill tab) whichever tab the Export menu is opened from. */}
@@ -2742,10 +2791,12 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
         <div className="space-y-6">
           {kpi && (
             <KpiStrip label={`Stock summary — ${kpi.name}`} items={[
-              { label: 'Coil (HR + slit)', value: fmtT(kpi.coil), unit: 'MT', sub: `HR ${fmtT(kpi.mother)} · slit ${fmtT(kpi.slit)}` },
-              { label: 'Current inventory', value: fmtT(kpi.fg), unit: 'MT', sub: `${fmtD(kpi.coverDays)} days of cover` },
-              { label: `Coil > ${th.coilOldDays} d`, value: fmtT(kpi.coilOver30), unit: 'MT', sub: `Avg coil age ${fmtD(kpi.avgCoilAgeDays)} d` },
-              { label: `FG > ${th.fgOldDays} d`, value: fmtT(kpi.fgOver75), unit: 'MT', sub: <>Status <StatusWord status={kpi.status} /> · {kpi.name}</> },
+              { label: 'Coil (HR + slit)', value: fmtT(kpi.coil), unit: 'T', sub: `HR ${fmtT(kpi.mother)} · slit ${fmtT(kpi.slit)}`,
+                onClick: () => onNavigate('coil', 'stock'), go: 'Coil Tracker › Stock now' },
+              { label: 'Current inventory', value: fmtT(kpi.fg), unit: 'T', sub: `${fmtD(kpi.coverDays)} FG days of cover` },
+              { label: `Coil > ${th.coilOldDays} d`, value: fmtT(kpi.coilOver30), unit: 'T', sub: `Avg coil age ${fmtD(kpi.avgCoilAgeDays)} d` },
+              { label: `FG > ${th.fgOldDays} d`, value: fmtT(kpi.fgOver75), unit: 'T', sub: <>Status <StatusWord status={kpi.status} /> · {kpi.name}</>,
+                onClick: () => canDrill(kpi) ? openDrill(kpi.plant, '2e') : onNavigate('drill', '2e'), go: 'Plant drill › FG age' },
             ]} />
           )}
 
@@ -2759,13 +2810,13 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
               {headerPlant == null ? 'Click a plant to open it on Plant drill.' : `Click ${plantLabel(headerPlant)} to open it on Plant drill.`}
             </p>
             <details className="text-xs text-slate-600 dark:text-slate-300">
-              <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>How these numbers are worked out · thresholds</summary>
+              <summary className={HELP_SUMMARY}>How these numbers are worked out · thresholds</summary>
               <ul className="mt-1.5 list-disc pl-5 space-y-1 max-w-4xl">
                 <li>HR coil = unslit coils, whole. Slit coil = slit coils not yet assigned to a production, at full slit weight.</li>
                 <li>Coil age counts from the HR coil’s inward date, never reset by slitting; the average is tonnage-weighted.</li>
                 <li>FG = produced − invoiced per SKU, positive stock only, aged by production batch (invoices take the oldest batch first).</li>
                 <li>Cover = FG ÷ average daily Invoiced over the {th.coverWindowDays} days ending {fmtIso(ov.to)}.</li>
-                <li>{th.caption}. Act: coil &gt; {th.coilOldDays} d ≥ {th.coilOldRedMt} MT or FG &gt; {th.fgOldDays} d ≥ {th.fgOldRedMt} MT. Watch: any coil &gt; {th.coilOldDays} d or FG &gt; {th.fgOldDays} d. OK: neither. A total takes its worst plant.</li>
+                <li>{th.caption}. Act: coil &gt; {th.coilOldDays} d ≥ {th.coilOldRedMt} T or FG &gt; {th.fgOldDays} d ≥ {th.fgOldRedMt} T. Watch: any coil &gt; {th.coilOldDays} d or FG &gt; {th.fgOldDays} d. OK: neither. A total takes its worst plant.</li>
                 <li>The region switch shows the plants whose service area (Plant master) names that region; its total adds those plants only. Unattributed stock sits at no plant, so it shows under All plants only. The CSV always holds every plant.</li>
                 <li>The CSV writes the status as red / amber / green, as before: red = Act, amber = Watch, green = OK.</li>
               </ul>
@@ -2787,7 +2838,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
                 <ul className="border-t border-slate-200 dark:border-slate-700 text-sm">
                   {needs.map(n => {
                     const row = ov.stock.rows.find(r => r.plant === n.plant)
-                    const text = `${n.name}: ${fmtT(n.weight)} MT ${NEEDS_TEXT[n.kind]}`
+                    const text = `${n.name}: ${fmtT(n.weight)} T ${NEEDS_TEXT[n.kind]}`
                     return (
                       <li key={`${n.plant}|${n.kind}`} className="flex items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-700 h-8">
                         <span className="flex items-center gap-2 min-w-0">
@@ -2806,7 +2857,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
           </div>
 
           <details className="text-xs text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 pt-2">
-            <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>What lives on the other tabs</summary>
+            <summary className={HELP_SUMMARY}>What lives on the other tabs</summary>
             <p className="mt-1.5 max-w-4xl">
               Plant drill: the coil &amp; FG grid, old coil, slit waiting, FG age and FG days of cover of one plant. Stock movement: the three reconciliation tables.
               Plant-wise Tracker: every plant’s day for one month. Sales &amp; activity: the sales, activity, coil and FG figures, SKU-wise inventory, the production
@@ -2830,12 +2881,10 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
             </div>
           )}
           {!d ? (
-            <p className="text-sm text-slate-400">Pick a plant above, or click one in the stock table on Overview, to open its drill panel.</p>
+            <p className={DASH_EMPTY}>Pick a plant above, or click one in the stock table on Overview, to open its drill panel.</p>
           ) : (
             <>
-              <Segmented role="tablist" label="Drill panel" value={drillTab} onChange={setDrillTab}
-                options={DRILL_TABS.map(t => [t.key, t.label])} />
-              <div className="mt-3">
+              <div>
                 <DrillFilters defs={filterDefs} values={drillFilters[drillTab] || {}}
                   onChange={v => setDrillFilters(all => ({ ...all, [drillTab]: v }))} />
               </div>
@@ -2857,7 +2906,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
                   </div>
                   <div>
                     <div className="mb-1 flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">FG MT by family × age</span>
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">FG T by family × age</span>
                       {fgFamilies.length > 0 && (
                         <button type="button" className={`text-xs font-medium ${link}`}
                           onClick={() => setOpenFams(allFamsOpen ? new Set() : new Set(fgFamilies.map(r => r.family)))}>
@@ -2884,7 +2933,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
                 </>
               )}
               <details className="mt-2 text-xs text-slate-600 dark:text-slate-300">
-                <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>About {tabName(drillTab)}</summary>
+                <summary className={HELP_SUMMARY}>About {tabName(drillTab)}</summary>
                 <p className="mt-1.5 max-w-4xl">
                   {drillTab === '2b' && <>HR coil = unslit HR coils, whole; slit coil = slit coils not yet assigned to a production. Both are aged from the HR coil’s inward date.
                     Cells: red past {th.coilOldDays} d for coil and past {th.fgOldDays} d for FG; amber {th.fgListDays + 1}–{th.fgOldDays} d for FG. Family is “NN NB” or “HxB”; click a family to open it by thickness. Pending to Dispatch = Confirmed + Non-confirmed at this plant.
@@ -2894,7 +2943,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
                   {drillTab === '2e' && <>FG production batches older than {th.fgListDays} days, oldest first. Auction list past {th.fgAuctionDays} days, Breach past {th.fgBreachDays} days. What is left of a batch is after invoices took the oldest batches first.</>}
                   {drillTab === '2g' && <>Laid out as the Planning master: section, size, thickness. Every SKU code of one size and thickness adds up in one row (hover a size for its codes), each code floored at 0 first.
                     Confirmed is netted against invoices already raised. Cover = FG ÷ average daily Invoiced over {th.coverWindowDays} days. Stock-out days = days this month, up to To, on which no SKU of that size and thickness had produced − invoiced above zero here.
-                    ABC ranks this plant’s sizes by MT invoiced over the last {th.abcWindowDays} days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
+                    ABC ranks this plant’s sizes by T invoiced over the last {th.abcWindowDays} days (A: the top 70%, B: the next 20%, C: the rest or no sale).</>}
                   {' '}The CSV file names keep the old codes ({drillTab}).
                 </p>
               </details>
@@ -2921,7 +2970,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
             </p>
           )}
           <details className="text-xs text-slate-600 dark:text-slate-300">
-            <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>How the movement reconciles</summary>
+            <summary className={HELP_SUMMARY}>How the movement reconciles</summary>
             <p className="mt-1.5 max-w-4xl">
               Opening is the close of the day before From. Each stage reconciles on the book — opening + in − out = closing — the Plant-wise Tracker’s replay over the same dated records.
               The book is then bridged to the stock table: for HR coil, coil left on a slit HR coil comes off; for FG, invoices with no production behind them are added back, so FG stock − Dispatched w/o production = produced − invoiced.
@@ -2932,7 +2981,7 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
       </div>
 
       <div hidden={screen !== 'tracker'}>{screens.tracker}</div>
-      <div hidden={screen !== 'sales'}>{screens.sales}</div>
+      <div hidden={screen !== 'activity'}>{screens.activity}</div>
     </div>
   )
 }
@@ -2947,13 +2996,15 @@ function InventoryOverview({ coils, babyCoils, productions, dispatches, orders, 
 // `trackerPlant` carries the same plant id so the grid drops its TOTAL block. Absent from the data,
 // not merely unrendered.
 //
-// Since #303 (design A) the tab is five screen tabs. The Inventory overview owns the header, the tabs
-// and the Export menu; this component's sections — the old "More" area of #231/#232 — are handed to
-// it as the Plant-wise Tracker and Sales & activity screens, their figures UNCHANGED. Its CSVs join
-// the Export menu as they were. No bars or charts: the trend is a table of the same numbers.
+// Since ADR-0018 the screens are sub-tabs of Dashboards › Inventory and › Plant drill, picked outside
+// and passed in as `screen` / `drillTab`. The Inventory overview owns the header and the Export menu;
+// this component's sections — the old "More" area of #231/#232 — are handed to it as the Plant-wise
+// Tracker and Activity screens, their figures UNCHANGED. Its CSVs join the Export menu as they were.
+// No bars or charts: the trend is a table of the same numbers.
 function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   trackerCoils = [], trackerBabyCoils = [], trackerProductions = [], trackerDispatches = [],
-  trackerPlant = null, trackerPlants = PLANTS, selectedPlant = ALL_PLANTS }) {
+  trackerPlant = null, trackerPlants = PLANTS, selectedPlant = ALL_PLANTS,
+  screen, drillTab, onNavigate }) {
   const active = (arr) => (arr || []).filter(x => !x.deleted)
   const ac = active(coils), ap = active(productions), ad = active(dispatches)
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
@@ -3018,7 +3069,6 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   // ── Sales KPIs (Confirmed / Non-confirmed / Invoiced) — the SAME helper the Sales dashboard uses,
   // so the two screens always agree. Invoiced MTD = current calendar month; Confirmed / Non-confirmed
   // are the carried-forward order-book snapshot. ──
-  const sales = useMemo(() => salesKpis(orders, ad, todayStr.slice(0, 7)), [orders, ad, todayStr])
 
   // ── Coil metrics (current snapshot, all MT) ──
   // Dispatched weight per mother coil (entry coilAllocations; legacy traceHrCoilId fallback).
@@ -3116,7 +3166,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
         : <span className={`tabular-nums ${ageClass(r.ageDays)}`} title={r.oldestAgeDays != null ? `Oldest: ${Math.round(r.oldestAgeDays)}d` : undefined}>{Math.round(r.ageDays)}</span>,
       total: () => Number.isFinite(portfolioAge) ? Math.round(portfolioAge) : '—',
     },
-    { label: 'Free Inventory (T)', value: r => r.free, totalValue: r => Math.max(0, r.free), render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
+    { label: 'Free after reserved (T)', value: r => r.free, totalValue: r => Math.max(0, r.free), render: r => redIfNeg(r.free), total: v => redIfNeg(v) },
   ]
   const skuInvFilters = [
     { key: 'type', label: 'Type', accessor: r => skuTypeOf(r.skuCode, r.description), options: ['SHS', 'RHS', 'CHS'] },
@@ -3231,21 +3281,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
   }, [ac, ap, ad, skuDesc])
 
   // ── CSV exports ──
-  const downloadStockCSV = () => {
-    const rows = ac.map(c => {
-      const producedWt = ap.flatMap(p => p.coilAllocations || []).filter(a => a.hrCoilId === c.hrCoilId).reduce((s, a) => s + Number(a.weight || 0), 0)
-      const rawRem = Math.max(0, Number(c.actualWeight || 0) - producedWt)
-      const dispWt = ad.flatMap(d => d.bundleEntries || []).flatMap(be => (be.coilAllocations && be.coilAllocations.length ? be.coilAllocations : (be.traceHrCoilId ? [{ hrCoilId: be.traceHrCoilId, weight: be.weight }] : []))).filter(a => a.hrCoilId === c.hrCoilId).reduce((s, a) => s + Number(a.weight || 0), 0)
-      const readyWt = Math.max(0, producedWt - dispWt)
-      return [
-        c.hrCoilId, c.coilGrade || '', c.thickness ?? '', c.width ?? '', fmtT(c.actualWeight),
-        fmtT(rawRem), fmtT(readyWt), fmtT(dispWt),
-      ]
-    })
-    downloadCSV(`stock-report-${todayStr}.csv`,
-      ['HR Coil', 'Grade', 'Thickness (mm)', 'Width (mm)', 'Actual Wt (T)', 'Raw Remaining (T)', 'Ready Wt (T)', 'Dispatched Wt (T)'],
-      rows)
-  }
+
 
   const downloadSkuCSV = () => {
     downloadCSV(`sku-report-${todayStr}.csv`,
@@ -3276,7 +3312,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
         </p>
       )}
       <details className="text-xs text-slate-600 dark:text-slate-300">
-        <summary className={`cursor-pointer font-medium text-indigo-700 dark:text-indigo-300 ${DASH_RING} rounded`}>How to read the tracker</summary>
+        <summary className={HELP_SUMMARY}>How to read the tracker</summary>
         <p className="mt-1.5 max-w-4xl">
           <strong>Shaded rows are stock</strong> (a closing balance), unshaded are flows (that day's movement).
           In the <strong>MTD</strong> column a flow is the month's sum and a stock is its latest close —
@@ -3290,7 +3326,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
     </DashBlock>
   )
 
-  const salesScreen = (
+  const activityScreen = (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <label className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">Activity period
@@ -3317,16 +3353,6 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
         <span className="text-xs text-slate-500 dark:text-slate-400">Scopes Activity, Pending to Dispatch in SKU-wise inventory, and the trend. Stock figures stay current.</span>
       </div>
 
-      {/* Sales (MT) — the SAME KPIs as the Sales dashboard (salesKpis): Confirmed / Non-confirmed are
-          the carried-forward snapshot; Invoiced MTD = current month. */}
-      <DashBlock title={`Sales — ${monthLabel(todayStr.slice(0, 7))}`}>
-        <KpiStrip label="Sales" items={[
-          { label: 'Total Orders', value: tonnes(sales.totalOrders), sub: 'Invoiced + Confirmed + Non-conf.' },
-          { label: 'Pending to Dispatch', value: tonnes(sales.pending), sub: `Confirmed ${tonnes(sales.confirmed)} · Non-confirmed ${tonnes(sales.nonConfirmed)}` },
-          { label: 'Invoiced MTD', value: tonnes(sales.mtdInvoice), sub: 'Invoiced this month' },
-        ]} />
-      </DashBlock>
-
       <DashBlock title={`Activity — ${periodLabel}`}>
         <KpiStrip label="Activity" items={[
           { label: 'Coil Inward', value: tonnes(activity.coilInward), sub: 'HR coil received' },
@@ -3349,7 +3375,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
         <KpiStrip label="Finished Goods" items={[
           { label: 'Current inventory', value: tonnes(fgLeft), sub: 'Produced − invoiced' },
           { label: 'FG Reserved', value: tonnes(fgReserved), sub: 'Released − invoiced (committed)' },
-          { label: 'Free FG', value: tonnes(freeFg), sub: 'Inventory − reserved' },
+          { label: 'Free after reserved', value: tonnes(freeFg), sub: 'Inventory − reserved' },
           { label: 'Dispatched w/o Production', value: tonnes(fgUnmatched),
             sub: skuTotals.negSkus ? `${skuTotals.negSkus} SKU(s) — invoiced beyond recorded production` : 'All dispatch matched to production' },
         ]} />
@@ -3365,11 +3391,11 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
             <p className="text-xs text-slate-500 dark:text-slate-400">
               <strong>Pending to Dispatch</strong> = Confirmed + Non-confirmed (same as the Sales figure above);
               <strong> Reserved</strong> = released − invoiced for active orders (not delivered/cancelled);
-              <strong> Free Inventory</strong> = Inventory − Reserved (negative ⇒ over-committed, red).
+              <strong> Free after reserved</strong> = Inventory − Reserved (negative ⇒ over-committed, red).
               Production / Reserved / Inventory are live; Pending to Dispatch follows the Activity period. The SKU-wise inventory CSV is this table as filtered and sorted.
             </p>
           </>
-        ) : <p className="text-sm text-slate-400 py-4">No SKU activity yet</p>}
+        ) : <p className={DASH_EMPTY}>No SKU activity yet</p>}
       </DashBlock>
 
       {/* Production & Dispatch Trend — the same buckets the chart drew (daily ≤ 31 days, else weekly), as text. */}
@@ -3378,7 +3404,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
           <FlatTable label="Production and dispatch trend" dense rowKey={r => r.key}
             cols={[{ label: 'T', left: true, text: r => r.label }, ...trend.data.map(b => ({ label: b.name, text: r => fmtT(b[r.key]) }))]}
             rows={[{ key: 'produced', label: 'Produced (T)' }, { key: 'dispatched', label: 'Invoiced (T)' }]} />
-        ) : <p className="text-sm text-slate-400 py-4">No production or dispatch activity in this period</p>}
+        ) : <p className={DASH_EMPTY}>No production or dispatch activity in this period</p>}
       </DashBlock>
 
       <DashBlock title={`Alerts & Warnings (${alerts.length})`}>
@@ -3400,7 +3426,7 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
 
       <DashBlock title="Recent Activity">
         {recentActivity.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4">No activity yet</p>
+          <p className={DASH_EMPTY}>No activity yet</p>
         ) : (
           <ul className="border-t border-slate-200 dark:border-slate-700">
             {recentActivity.map((e, i) => (
@@ -3420,11 +3446,10 @@ function Dashboard({ coils, productions, dispatches, skus, babyCoils, orders,
     <InventoryOverview coils={coils} babyCoils={babyCoils} productions={productions} dispatches={dispatches} orders={orders} skus={skus}
       compareCoils={trackerCoils} compareBabyCoils={trackerBabyCoils} compareProductions={trackerProductions} compareDispatches={trackerDispatches}
       comparePlant={trackerPlant} plants={trackerPlants} selectedPlant={selectedPlant}
-      screens={{ tracker: trackerScreen, sales: salesScreen }}
+      screens={{ tracker: trackerScreen, activity: activityScreen }} screen={screen} drillTab={drillTab} onNavigate={onNavigate}
       exports={[
         { label: 'Plant-wise Tracker CSV', run: downloadTrackerCSV, note: `${trackerGrid.month}, as on the Plant-wise Tracker` },
-        { label: 'SKU-wise inventory CSV', run: downloadSkuCSV, note: 'As filtered and sorted on Sales & activity' },
-        { label: 'Coil stock report CSV', run: downloadStockCSV, note: 'Every coil: raw remaining, ready and dispatched' },
+        { label: 'SKU-wise inventory CSV', run: downloadSkuCSV, note: 'As filtered and sorted on Activity' },
       ]} />
   )
 }
@@ -3474,7 +3499,7 @@ function KeyPoints({ points, label = 'Key' }) {
   if (!shown.length) return null
   return (
     <details className="text-[11px] text-slate-500 dark:text-slate-400">
-      <summary className="cursor-pointer w-max font-medium text-slate-600 dark:text-slate-300 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">{label}</summary>
+      <summary className={HELP_SUMMARY}>{label}</summary>
       <ul className="mt-1 ml-4 list-disc space-y-0.5">{shown.map((pt, i) => <li key={i}>{pt}</li>)}</ul>
     </details>
   )
@@ -3540,7 +3565,7 @@ function CoilRegisterTable({ table }) {
             <th className={th}>HR T</th><th className={th}>HR #</th><th className={th}>Slit T</th><th className={th}>Slit #</th>
             <th className={th}>Total T</th>
             {bands.map(b => <th key={b} className={th}><span className={BAND_TEXT[b] || ''}>{b} T</span></th>)}
-            <th className={th}>Avg age (d)</th><th className={th}>Produced 30d T</th><th className={th}>Days of cover</th>
+            <th className={th}>Avg age (d)</th><th className={th}>Produced 30d T</th><th className={th}>Coil days of cover</th>
           </tr>
         </thead>
         <tbody>
@@ -3558,7 +3583,7 @@ function RegisterSection({ title, note, actions, children }) {
   return (
     <section className="space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-900 dark:text-slate-100">{title}</h3>
+        <h3 className="text-base font-semibold text-slate-900 dark:text-white">{title}</h3>
         <div className="flex flex-wrap items-center gap-3">
           {note && <span className="text-xs text-slate-500 dark:text-slate-400">{note}</span>}
           {actions}
@@ -3629,9 +3654,9 @@ function CoilThicknessTable({ grid }) {
 // the record (trace) of the coil last clicked. Every figure comes finished out of calc.js
 // (coilTrackerView, coilThicknessGrid, coilInventoryRow); this component sums nothing.
 const COIL_TRACKER_VIEWS = [['stock', 'Stock now'], ['month', 'Movement by month'], ['ledger', 'Coil ledger']]
-function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeLabel = 'All plants' }) {
+// `view` is picked by the Dashboards › Coil Tracker sub-tabs (ADR-0018).
+function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeLabel = 'All plants', view = 'stock' }) {
   const [selectedCoilId, setSelectedCoilId] = useState(null)
-  const [view, setView] = useState('stock')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const active = (arr) => (arr || []).filter(x => !x.deleted)
@@ -3729,61 +3754,41 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeL
     ledgerExportRef.current.map(r => [r.hrCoilId, r.grade || '', r.thickness ?? '', r.width ?? '',
       ...SUMMARY_COLS.map(col => col.fmt === 'wt' ? fmt2(r[col.key]) : fmtCount(r[col.key])), r.status]))
 
-  const field = (label, value, sub, tone = '') => (
-    <div className="px-3 py-2 border-t border-l border-slate-200 dark:border-slate-700 min-w-0">
-      <p className={REG_LABEL}>{label}</p>
-      <p className="mt-0.5"><b className={`font-mono tabular-nums text-xl font-semibold ${tone || 'text-slate-900 dark:text-white'}`}>{value}</b>
-        {sub && <span className="ml-1 text-xs text-slate-500 dark:text-slate-400">{sub}</span>}</p>
-    </div>
-  )
   const act = all.bands.Act
+  // One Export menu (ADR-0018): the open view's files, each the function its old ⬇ CSV button called.
+  const exportItems = () => ({
+    stock: [{ label: 'Stock by plant and thickness CSV', run: downloadStockByPlantCSV, disabled: !stockByPlant.rows.length },
+      { label: 'Coils in stock CSV', run: downloadStockListCSV, disabled: !stockRows.length, note: 'As filtered and sorted on screen' }],
+    month: [{ label: 'Movement by month CSV', run: downloadThicknessCSV, disabled: !thicknessGrid.blocks.length }],
+    ledger: [{ label: 'Coil ledger CSV', run: downloadLedgerCSV, disabled: !ledger.length, note: 'As filtered on screen' }],
+  }[view] || [])
   return (
-    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 sm:p-6 space-y-6">
-      {/* ── Title block and the six fields ── */}
-      <div className="border-[1.5px] border-slate-800 dark:border-slate-400">
-        <div className="grid grid-cols-2 lg:grid-cols-[2.2fr_1fr_1fr_1.4fr] -mt-px -ml-px">
-          <div className="col-span-2 lg:col-span-1 px-3 py-2 border-t border-l border-slate-200 dark:border-slate-700">
-            <p className={REG_LABEL}>Raw-material coil register</p>
-            <h2 className="text-xl font-extrabold uppercase tracking-wide text-slate-900 dark:text-white">Coil Tracker</h2>
-          </div>
-          <div className="px-3 py-2 border-t border-l border-slate-200 dark:border-slate-700"><p className={REG_LABEL}>Scope</p><p className="font-semibold text-slate-900 dark:text-white">{scopeLabel}</p></div>
-          <div className="px-3 py-2 border-t border-l border-slate-200 dark:border-slate-700"><p className={REG_LABEL}>As of</p><p className="font-mono font-semibold text-slate-900 dark:text-white">{fmtIso(stockToday)}</p></div>
-          <div className="col-span-2 lg:col-span-1 px-3 py-2 border-t border-l border-slate-200 dark:border-slate-700"><p className={REG_LABEL}>Source</p><p className="text-sm font-semibold text-slate-900 dark:text-white">Coil Inward · Slitting · Production · Invoices</p></div>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 -ml-px border-t-[1.5px] border-slate-800 dark:border-slate-400">
-          {field('Total stock', fmtStockT(all.totalWeight), `T · ${(all.hr.count + all.slit.count).toLocaleString('en-US')} coils`)}
-          {field('HR coil, unslit', fmtStockT(all.hr.weight), `T · ${all.hr.count}`)}
-          {field('Slit coil', fmtStockT(all.slit.weight), `T · ${all.slit.count}`)}
-          {field('Act, 61+ days', act.empty ? '–' : fmtStockT(act.weight), act.empty ? '' : `T · ${act.count} coils`, act.empty ? '' : 'text-red-700 dark:text-red-400')}
-          {field('Avg age', all.avgAge == null ? '–' : all.avgAge, 'days')}
-          {field('Days of cover', all.cover.tone === 'none' ? '–' : all.cover.label, all.produced30d ? `${fmtStockT(all.produced30d)} T used in 30 d` : '', coverTone(all.cover))}
-        </div>
-      </div>
-
-      {/* ── The three views ── */}
-      <div role="group" aria-label="Coil Tracker view" className="inline-flex flex-wrap border-[1.5px] border-slate-800 dark:border-slate-400">
-        {COIL_TRACKER_VIEWS.map(([k, label]) => (
-          <button key={k} type="button" onClick={() => setView(k)} aria-pressed={view === k}
-            className={`px-4 py-2 text-xs font-bold uppercase tracking-[0.08em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset ${view === k
-              ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900' : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800'}`}>{label}</button>
-        ))}
-      </div>
+    <div className="space-y-6">
+      <DashControls scope={scopeLabel} asOf={fmtIso(stockToday)} note="Source: Coil Inward · Slitting · Production · Invoices" exports={exportItems} />
+      <KpiStrip label="Coil stock summary" items={[
+        { label: 'Total stock', value: fmtStockT(all.totalWeight), unit: 'T', sub: `${(all.hr.count + all.slit.count).toLocaleString('en-US')} coils` },
+        { label: 'HR coil, unslit', value: fmtStockT(all.hr.weight), unit: 'T', sub: `${all.hr.count} coils` },
+        { label: 'Slit coil', value: fmtStockT(all.slit.weight), unit: 'T', sub: `${all.slit.count} coils` },
+        { label: 'Act, 61+ days', value: act.empty ? '–' : fmtStockT(act.weight), unit: act.empty ? '' : 'T', sub: act.empty ? '' : `${act.count} coils`,
+          tone: act.empty ? '' : 'text-red-700 dark:text-red-400' },
+        { label: 'Avg age', value: all.avgAge == null ? '–' : all.avgAge, unit: all.avgAge == null ? '' : 'd' },
+        { label: 'Coil days of cover', value: all.cover.tone === 'none' ? '–' : all.cover.label, sub: all.produced30d ? `${fmtStockT(all.produced30d)} T used in 30 d` : '',
+          tone: coverTone(all.cover) },
+      ]} />
 
       {view === 'stock' && (
         <>
-          <RegisterSection title="Stock by plant and thickness" note="Thickness = nearest standard, a tie going heavier"
-            actions={<Btn size="sm" variant="ghost" onClick={downloadStockByPlantCSV} disabled={!stockByPlant.rows.length}>⬇ CSV</Btn>}>
+          <RegisterSection title="Stock by plant and thickness" note="Thickness = nearest standard, a tie going heavier">
             <CoilRegisterTable table={stockByPlant} />
             <KeyPoints points={[
               'HR coil = unslit, actual weight · Slit coil = in stock, slit weight',
               'Act 61+ d · Watch 31–60 d · Clear 0–30 d (HR from inward, slit from slitting)',
               'Avg age: tonne-weighted',
               'Produced 30d = slit coil into production, last 30 days',
-              `Cover = Total ÷ (Produced 30d ÷ 30) · red under ${LOW_COVER_DAYS} days · No use = not drawn on in 30 days`,
+              `Coil days of cover = Total ÷ (Produced 30d ÷ 30) · red under ${LOW_COVER_DAYS} days · No use = not drawn on in 30 days`,
             ]} />
           </RegisterSection>
-          <RegisterSection title={`Coils in stock (${stockRows.length})`} note="Oldest first · click a line for its record"
-            actions={<Btn size="sm" variant="ghost" onClick={downloadStockListCSV} disabled={!stockRows.length}>⬇ CSV</Btn>}>
+          <RegisterSection title={`Coils in stock (${stockRows.length})`} note="Oldest first · click a line for its record">
             <DataTable columns={stockColumns} data={stockRows} filters={stockFilters}
               exportRef={stockExportRef} maxHeight="26rem" totalsLabel="TOTAL"
               onRowClick={r => pickCoil(r.motherId)} highlightRow={r => r.motherId === selectedCoilId} />
@@ -3792,11 +3797,10 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeL
       )}
 
       {view === 'month' && (
-        <RegisterSection title="Movement by thickness and month (T)" note="Latest month first"
-          actions={<Btn size="sm" variant="ghost" onClick={downloadThicknessCSV} disabled={!thicknessGrid.blocks.length}>⬇ CSV</Btn>}>
+        <RegisterSection title="Movement by thickness and month (T)" note="Latest month first">
           {thicknessGrid.blocks.length
             ? <CoilThicknessTable grid={thicknessGrid} />
-            : <p className="text-sm text-slate-500 dark:text-slate-400">No coils recorded.</p>}
+            : <p className={DASH_EMPTY}>No coils recorded.</p>}
           <KeyPoints points={[
             'HR: Opening + Inward − Slit out = Closing',
             'Slit: Opening + Slit in − Consumed = Closing',
@@ -3817,7 +3821,6 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeL
               <label htmlFor="ct-ledger-to" className="text-xs text-slate-500 dark:text-slate-400">to</label>
               <input id="ct-ledger-to" type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
                 className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
-              <Btn size="sm" variant="ghost" onClick={downloadLedgerCSV} disabled={!ledger.length}>⬇ Stock CSV</Btn>
             </div>
           }>
           <DataTable columns={ledgerColumns} data={ledger} filters={ledgerFilters}
@@ -3830,32 +3833,19 @@ function CoilTracker({ coils, productions, dispatches, babyCoils, plants, scopeL
       {/* ── The coil record (ticket #243's trace): one HR coil, Inward → Slit → Produced → Dispatched.
           Every figure comes finished out of trace; every weight is THIS coil's share. ── */}
       {trace && (
-        <section ref={recordRef} aria-label={`Coil record ${trace.header.id}`} className="scroll-mt-4 border-[1.5px] border-slate-800 dark:border-slate-400">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-slate-200 dark:border-slate-700">
-            <div>
-              <p className={REG_LABEL}>Coil record</p>
-              <h3 className="font-mono text-lg font-semibold text-slate-900 dark:text-white">{trace.header.id}</h3>
-            </div>
+        <section ref={recordRef} aria-label={`Coil record ${trace.header.id}`} className="scroll-mt-4 space-y-3 border-t border-slate-200 dark:border-slate-700 pt-4">
+          {/* The plain look of the dashboards (ADR-0018): a heading, one line of facts, the stages as the number strip. */}
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-white">Coil record · <span className="tabular-nums">{trace.header.id}</span></h3>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCoilId(null)}>Clear selection</Btn>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-6 -ml-px">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
             {[['Plant', trace.header.plantName], ['Grade', trace.header.grade || '—'], ['Thk × width', `${trace.header.spec} mm`],
-              ['PO', trace.header.poNumber || '—'], ['Invoice wt', `${fmtT3(trace.header.invoiceWeight)} T`], ['Actual wt', `${fmtT3(trace.header.actualWeight)} T`]].map(([k, v]) => (
-              <div key={k} className="px-3 py-2 border-l border-b border-slate-100 dark:border-slate-800 min-w-0">
-                <p className={REG_LABEL}>{k}</p><p className="font-mono text-sm text-slate-900 dark:text-slate-100 break-words">{v}</p>
-              </div>
-            ))}
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 -ml-px border-b border-slate-200 dark:border-slate-700">
-            {trace.stages.map(st => (
-              <div key={st.key} className={`px-3 py-2.5 border-l border-slate-200 dark:border-slate-700 ${st.weight > 0 ? 'bg-emerald-50/60 dark:bg-emerald-900/15' : ''}`}>
-                <p className={REG_LABEL}>{st.name}</p>
-                <p className="font-mono tabular-nums text-lg font-semibold text-slate-900 dark:text-white">{fmtT3(st.weight)} <span className="text-xs font-normal text-slate-500">T</span></p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">{st.sub}</p>
-              </div>
-            ))}
-          </div>
-          <div className="p-3 space-y-5">
+              ['PO', trace.header.poNumber || '—'], ['Invoice wt', `${fmtT3(trace.header.invoiceWeight)} T`], ['Actual wt', `${fmtT3(trace.header.actualWeight)} T`]]
+              .map(([k, v], n) => <React.Fragment key={k}>{n ? ' · ' : ''}{k} <strong className="font-medium text-slate-800 dark:text-slate-100">{v}</strong></React.Fragment>)}
+          </p>
+          <KpiStrip label={`Coil record stages — ${trace.header.id}`} items={trace.stages.map(st => ({ label: st.name, value: fmtT3(st.weight), unit: 'T', sub: st.sub }))} />
+          <div className="space-y-5">
             <RegisterSection title={`Slit coils (${trace.babies.length})`}>
               <TraceTable empty="Not slit yet." head={['Slit coil', 'Slitting date', 'Thk × Width (mm)', 'Weight (T)', 'Status', 'Used in run(s)']}
                 rows={trace.babies.map(b => [b.id, <TraceDate key="d" date={b.date} outOfOrder={b.outOfOrder} />, b.spec, fmtT3(b.weight), <Badge key="s" ok={b.status === 'In stock'} text={b.status} />, b.usedIn.join(', ') || '—'])}
@@ -4087,6 +4077,14 @@ function Orders({ orders, allOrders, replaceOrders, dispatches, allDispatches, r
   const onUploadInvoices = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
+    // The coil trace skips what earlier invoices took and draws from production. If either table
+    // failed to load, it restarts at the oldest tubes and double-claims them (31-Oct-2026: 1,276 T).
+    const notLoaded = ['dispatches', 'productions'].filter(t => t in failedLoads())
+    if (notLoaded.length) {
+      setInvoiceMsg({ kind: 'err', text: `Not uploaded — ${notLoaded.join(' and ')} did not load from the database. Press Retry on the red banner, then upload again.` })
+      if (invoiceFileRef.current) invoiceFileRef.current.value = ''
+      return
+    }
     try {
       const { XLSX, wb } = await readWorkbook(file)
       // The register is a single-sheet export. Prefer a sheet named like /invoice/i if one exists,
@@ -4362,6 +4360,231 @@ const SALES_GRID_SHOW = [
   { key: 'raw', label: 'Raw material', measures: [], coil: true },
   ...SALES_GRID_MEASURES.map(m => ({ key: m.key, label: m.label, measures: [m], single: true })),
 ]
+// ── Sales tab FM / MM / SM sub-tab (#384). The sub-tab's name lives in ONE constant (owner, 18-Nov-2026: the
+// final name is FM / MM / SM; a rename would still be one line). Its default Show chip, FM / MM / SM view, lays the grid out per
+// thickness group like Production check: the tag + FG days of cover first, then Closing stock, Dispatch,
+// Pending to Dispatch, Production required. Only the sub-tab offers it (SalesSizeGrid's `tagRows`).
+const FM_MM_SM_NAME = 'FM / MM / SM'
+const FM_MM_SM_CHIP = { key: 'fmMmSm', label: `${FM_MM_SM_NAME} view`, tagged: true,
+  measures: ['closing', 'dispatch', 'pending', 'required'].map(k => SALES_GRID_MEASURES.find(m => m.key === k)) }
+// By FM / MM / SM tab (#381) only: the "all measures" chip — one block each for FG days of cover, Blended monthly
+// rate, Current inventory (the SKU's own, region-wide, as of today), then Pending to Dispatch and Production
+// required (the cell's, under the filters). `rowFigures` = the two SKU figures read off `fmMmSmTagSections`.
+const FM_MM_SM_ALL_CHIP = { key: 'fmMmSmAll', label: 'All measures', tagged: true, rowFigures: true,
+  measures: ['pending', 'required'].map(k => SALES_GRID_MEASURES.find(m => m.key === k)) }
+// Raw material (#382), the sub-tab's own: it takes the Dashboard Raw material chip's place on the sub-tab only.
+// Per thickness: the tag, Production required, Raw material available (the cell's share after the split,
+// `fmMmSmRawMaterial`) and Raw material required. Drawn by `FmMmSmRawView`; the Dashboard's chip is unchanged.
+const FM_MM_SM_RAW_CHIP = { key: 'fmMmSmRaw', label: 'Raw material', measures: [], rawSplit: true }
+// The visible note: the plant confirmed the method (relayed by the owner, 18-Nov-2026); yield loss is still ignored.
+const FM_MM_SM_RAW_NOTE = 'Raw material split: a shared slit coil goes to the sizes it fits by what each still needs — the plant confirmed this method (18-Nov-2026). Raw material required ignores yield loss from coil to tube.'
+// Header tooltip on the date-independent column (#384 item 8).
+const FM_MM_SM_TAG_TIP = `${FM_MM_SM_NAME} and FG days of cover (blended) — as of today, for the whole region: the Plant filter and From / To do not change them. Days = Current inventory ÷ (Blended monthly rate ÷ 30), whole days; hover a cell for its bracket.`
+// One tag cell of the FM / MM / SM view: `fmMmSmCellLabel`'s text in Planning's cover pill (COVER_PILL), the
+// bracket word on hover (owner, 17-Nov-2026: narrow cells print number + tag). Nothing is computed here.
+// `cellKey` / `found` (#380): the cell a Make next · Stock stuck row finds, ringed while `found`.
+// `edge` = the left rule; off inside a block of the By FM / MM / SM tab, where only a block's first thickness has it.
+// `right`: in a block table (`FmMmSmBlockTable`) the thickness heads are right-aligned, so the pill is too — a left pill
+// there sat closer to the column on its left and read as that thickness (owner, 20-Nov-2026).
+function FmMmSmCell({ label, td, cellKey, found = false, edge = true, right = false }) {
+  const look = label.kind === 'days' ? `rounded-full px-1.5 py-px ${COVER_PILL[label.bracket] || ''}`
+    : label.kind === 'none' ? `rounded px-1.5 py-px ${MOVES_CHIP['No sales']}`
+    : label.kind === 'multi' ? 'text-amber-600 dark:text-amber-400 font-medium'
+    : 'text-slate-400 dark:text-slate-500'
+  return (
+    <td title={label.title} data-cell-key={cellKey} data-found={found ? 'true' : undefined}
+      className={`${td} ${right ? 'text-right' : 'text-left'} whitespace-nowrap ${edge ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${found ? 'ring-2 ring-inset ring-indigo-500 bg-indigo-50 dark:bg-indigo-950' : ''}`}>
+      <span data-fm-mm-sm-cell={label.kind} data-cover={label.word || undefined} className={`inline-flex items-center gap-1 leading-tight tabular-nums ${look}`}>
+        {label.kind === 'days' && label.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
+        {label.text}
+      </span>
+    </td>
+  )
+}
+// The end of a region block (#384 item 9): Tagged + Not tagged / Outside the plan = the grid's Total, for
+// Closing stock, Dispatch and Pending to Dispatch, then the SKUs of the plan the grid has no cell for, each
+// with its reason (`fmMmSmJoin`). Named, never dropped.
+function FmMmSmCheck({ join, region, from, to, plantScoped = false }) {
+  const th = 'px-2 py-1 font-semibold whitespace-nowrap text-right'
+  const td = 'px-2 py-1 text-right tabular-nums whitespace-nowrap'
+  // A count of CELLS: it follows the Plant filter and From / To, so it is never printed as a SKU count (#384 item 8).
+  const taggedCells = Object.values(join.landed).filter(list => list.length).length
+  const row = (label, t, tip, strong = false) => (
+    <tr className={`border-t border-slate-200 dark:border-slate-700 ${strong ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`} title={tip}>
+      <td className="px-2 py-1 text-left whitespace-nowrap">{label}</td>
+      {['closing', 'dispatch', 'pending'].map(k => <td key={k} className={`${td} ${t[k] < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''}`}>{gridCell(t[k])}</td>)}
+    </tr>
+  )
+  const span = `${fmtIso(from)} → ${fmtIso(to)}`
+  return (
+    <div className="mt-4 space-y-2">
+      <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Tagged and not tagged · {region}</h3>
+      <div className="overflow-x-auto">
+        <table className="text-xs border border-slate-200 dark:border-slate-700 rounded-md" aria-label={`Tagged and not tagged · ${region}`}>
+          <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-200">
+            <tr>
+              <th className={`${th} text-left`}>{FM_MM_SM_CHIP.label} cells</th>
+              <th className={th}>Closing stock · {fmtIso(to)}</th><th className={th}>Dispatch · {span}</th><th className={th}>Pending to Dispatch</th>
+            </tr>
+          </thead>
+          <tbody>
+            {row(`Tagged (${taggedCells} cell${taggedCells === 1 ? '' : 's'})`, join.totals.tagged, 'Cells with a SKU of the plan on them')}
+            {row('Not tagged / Outside the plan', join.totals.untagged,
+              join.untagged.length ? `${join.untagged.length} cells: ${join.untagged.slice(0, 40).map(c => `${c.section} ${gridSize(c.size)} ${gridThk(String(c.thickness ?? ''))}`).join(', ')}${join.untagged.length > 40 ? ' …' : ''}` : 'No cell')}
+            {row('Grid total', join.totals.grid, 'The Total row of the grid above', true)}
+          </tbody>
+        </table>
+      </div>
+      {join.multi.length > 0 && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          <strong>{join.multi.length} cell{join.multi.length > 1 ? 's hold' : ' holds'} more than one SKU of the plan</strong> ({join.multi.join(', ')}), so no tag is shown there — two planning bands
+          fold into one standard thickness. Ask the owner which tag the cell should carry.
+        </p>
+      )}
+      <details className="text-xs text-slate-600 dark:text-slate-300">
+        <summary className={HELP_SUMMARY}>SKUs not shown in the grid ({join.notShown.length})</summary>
+        {join.notShown.length ? (
+          <ul className="mt-1 max-h-64 overflow-auto columns-1 md:columns-2 gap-6">
+            {join.notShown.map(r => (
+              <li key={r.id} className="py-0.5 break-inside-avoid">
+                {r.section} {r.size} · {Number(r.thickness).toFixed(1)} mm · {r.tag}
+                {r.coverKind === 'days' ? ` · ${r.coverDays} d ${r.bracket}` : r.coverKind === 'noUse' ? ' · No use' : ''}
+                <span className="text-slate-400 dark:text-slate-500"> — {fmMmSmNotShownReason(r, plantScoped)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="mt-1 text-slate-400">Every SKU of {region}’s plan has a cell on the grid.</p>}
+      </details>
+    </div>
+  )
+}
+// By FM / MM / SM tab: the Sales Dashboard's layout (owner, 18-Nov-2026) — one block per figure, the thicknesses
+// inside it, then the block's Total; FG days of cover has no Total (days do not add up). Section and Size pinned.
+// `blocks`: [{ key, label, tip, tone, cell(r, t, edge) → <td>, total?(r) → number }]. Nothing is computed here.
+const FM_MM_SM_EDGE = 'border-l-2 border-slate-300 dark:border-slate-600'
+const FM_MM_SM_DAYS_TONE = 'bg-slate-100 dark:bg-slate-800'
+function FmMmSmBlockTable({ name, thicknesses, rows, blocks }) {
+  const th = 'px-1.5 py-0.5 font-semibold whitespace-nowrap'
+  const td = 'px-1.5 py-0.5'
+  const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
+  return (
+    <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+      <table className="min-w-full text-[11px] [&_thead]:text-[10px]" aria-label={name}>
+        <thead className="sticky top-0 z-10">
+          <tr className="text-slate-600 dark:text-slate-200">
+            <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
+            <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+            {blocks.map(b => <th key={b.key} colSpan={thicknesses.length + (b.total ? 1 : 0)} title={b.tip} className={`${th} text-center ${FM_MM_SM_EDGE} ${b.tone}`}>{b.label}</th>)}
+          </tr>
+          <tr className="text-slate-600 dark:text-slate-200">
+            {blocks.map(b => (
+              <React.Fragment key={b.key}>
+                {thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : FM_MM_SM_EDGE} ${b.tone}`}>{gridThk(t)}</th>)}
+                {b.total && <th className={`${th} text-right ${thicknesses.length ? '' : FM_MM_SM_EDGE} ${b.tone}`}>Total</th>}
+              </React.Fragment>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => r.isGroup ? (
+            // Split by tag (ADR-0018): a tag's group row, under the one header. Its text stays pinned with Section and Size.
+            <tr key={r.rowKey} data-fm-mm-sm-section={r.group} className="border-t-2 border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900">
+              <td colSpan={2 + blocks.reduce((a, b) => a + thicknesses.length + (b.total ? 1 : 0), 0)} className={`${td} text-left`}>
+                <span className="sticky left-0 inline-flex flex-wrap items-baseline gap-x-3 py-0.5">{r.head}</span>
+              </td>
+            </tr>
+          ) : (
+            <tr key={r.rowKey ?? (r.isTotal ? 'total' : `${r.section}|${r.size}`)} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+              <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
+              <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? (r.totalLabel || 'Total') : gridSize(r.size)}</td>
+              {blocks.map(b => (
+                <React.Fragment key={b.key}>
+                  {thicknesses.map((t, i) => <React.Fragment key={t}>{b.cell(r, t, i ? '' : FM_MM_SM_EDGE)}</React.Fragment>)}
+                  {b.total && (() => {
+                    const v = b.total(r)
+                    return <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${thicknesses.length ? '' : FM_MM_SM_EDGE} ${red(v)}`}>{gridCell(v)}</td>
+                  })()}
+                </React.Fragment>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+// Split by tag (ADR-0018; was the By FM / MM / SM tab's stacked sections, #381): ONE grid, one header, its rows
+// grouped by tag — FM, MM, SM, No sales, then Not tagged / Outside the plan — each group with its own Total row,
+// then the region's Total. A cell sits in one group (`fmMmSmTagSections`), so the groups add up to the grid.
+// Blocks as the stacked grids had them (`FmMmSmBlockTable`): under All measures FG days of cover, Blended monthly
+// rate, Current inventory, Pending to Dispatch, Production required. A group without days or a rate (No sales)
+// leaves those cells blank. Nothing is computed here but the layout.
+function FmMmSmTagSplitTable({ sections, region, chip, required, stockKnown, blockLabel }) {
+  const td = 'px-1.5 py-0.5'
+  const num = `${td} text-right tabular-nums whitespace-nowrap`
+  const red = (v) => v != null && v < -0.05 ? 'text-red-600 dark:text-red-400 font-semibold' : ''
+  const asOfTip = `${region}-wide, as of today — the SKU’s own figure, as on the Production Planning columns; the Plant filter and From / To do not change it.`
+  // The group row names the tag, so a cell prints its days only ("7 d", not "7 d FM").
+  const untag = (l) => l.kind === 'days' ? { ...l, text: String(l.text).replace(/\s+(FM|MM|SM)$/, '') } : l
+  const parts = sections.map(s => {
+    const pivot = salesSizePivot(s.lines, required)
+    const onCell = {}
+    s.skus.forEach(r => { (onCell[r.cellKey] = onCell[r.cellKey] || []).push(r) })
+    return { s, pivot, onCell }
+  })
+  // The whole grid's pivot: the thickness columns every group shares, and the region's Total row.
+  const all = salesSizePivot(sections.flatMap(s => s.lines), required)
+  const rows = []
+  parts.forEach(p => {
+    const { s } = p
+    const cellCount = new Set(s.lines.map(l => `${l.section}|${l.size}|${l.stdThickness ?? ''}`)).size
+    const tagCells = new Set(s.skus.map(r => r.cellKey)).size
+    rows.push({ isGroup: true, rowKey: `g|${s.key}`, group: s.key, head: <>
+      <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+        {s.key === 'outside' ? s.label : <span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[s.key]}`}>{s.label}</span>}
+      </span>
+      <span className="text-xs font-normal text-slate-500 dark:text-slate-400">
+        {s.key === 'outside'
+          ? `${cellCount} cell${cellCount === 1 ? '' : 's'} with figures and no one tag — no SKU of ${region}’s plan, or SKUs of two tags on one cell`
+          : `${s.count} SKU${s.count === 1 ? '' : 's'} · ${tagCells} cell${tagCells === 1 ? '' : 's'} on this grid${s.days ? '' : ' · no days of cover or rate: these SKUs do not sell, but their orders stay'}`}
+        {!s.lines.length && ` — ${s.key === 'outside' ? 'every cell on the grid carries one tag' : `no ${s.label} SKU has a cell on the grid here`}`}
+      </span>
+    </> })
+    if (!s.lines.length) return
+    p.pivot.rows.forEach(r => rows.push({ ...r, p, rowKey: `${s.key}|${r.section}|${r.size}` }))
+    rows.push({ section: '', size: '', cells: p.pivot.total.cells, total: p.pivot.total.total, isTotal: true, p, rowKey: `t|${s.key}`, totalLabel: `${s.label} total` })
+  })
+  rows.push({ section: '', size: '', cells: all.total.cells, total: all.total.total, isTotal: true, rowKey: 'total', totalLabel: 'Total' })
+  // A SKU figure (rate, inventory) of one cell, a group's column, or the whole grid's column (no `p`).
+  const colFig = (s, t, k) => Object.entries(s.figures).filter(([key]) => key.endsWith(`|${t}`)).reduce((a, [, f]) => a + f[k], 0)
+  const has = (s, k) => k !== 'rate' || !!s.rate
+  const skuCell = (r, t, k) => !r.p ? parts.reduce((a, { s }) => a + (has(s, k) ? colFig(s, t, k) : 0), 0)
+    : !has(r.p.s, k) ? null : r.isTotal ? colFig(r.p.s, t, k) : r.p.s.figures[`${r.section}|${r.size}|${t}`]?.[k] ?? 0
+  const skuTotal = (r, k) => !r.p ? parts.reduce((a, { s }) => a + (has(s, k) ? s.totals[k] : 0), 0)
+    : !has(r.p.s, k) ? 0 : r.isTotal ? r.p.s.totals[k] : r.p.s.sizeTotals[`${r.section}|${r.size}`]?.[k] ?? 0
+  const blocks = [
+    ...(sections.some(s => s.days) ? [{ key: 'days', label: 'FG days of cover', tip: FM_MM_SM_TAG_TIP, tone: FM_MM_SM_DAYS_TONE,
+      cell: (r, t, edge) => r.isTotal || !r.p?.s.days || !r.cells[t] ? <td className={`${td} ${edge}`} />
+        : <FmMmSmCell td={td} edge={!!edge} right label={untag(fmMmSmCellLabel(r.p.onCell[`${r.section}|${r.size}|${t}`] || []))} /> }] : []),
+    ...[
+      ...(chip.rowFigures && sections.some(s => s.rate) ? [{ key: 'rate', label: 'Blended monthly rate', tip: `T a month. ${asOfTip}`, tone: 'bg-emerald-50 dark:bg-emerald-900/30' }] : []),
+      ...(chip.rowFigures ? [{ key: 'inventory', label: 'Current inventory', tip: `T, stock now. ${asOfTip}`, tone: 'bg-amber-50 dark:bg-amber-900/30' }] : []),
+    ].map(b => ({ ...b,
+      cell: (r, t, edge) => { const v = skuCell(r, t, b.key); return <td className={`${num} ${edge}`}>{v == null ? '' : gridCell(v)}</td> },
+      total: r => skuTotal(r, b.key) })),
+    ...chip.measures.map(m => ({ key: m.key, label: blockLabel(m), tip: m.tip, tone: SALES_GRID_TONE[m.key],
+      cell: (r, t, edge) => {
+        const v = r.cells[t]?.[m.key] ?? (stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
+        return <td className={`${num} ${edge} ${red(v)}`}>{gridCell(v)}</td>
+      },
+      total: r => r.total[m.key] })),
+  ]
+  return (
+    <section aria-label={`Split by tag · ${region}`} data-fm-mm-sm-split="">
+      <FmMmSmBlockTable name={`Sales by size and thickness · ${region} · split by tag`} thicknesses={all.thicknesses} rows={rows} blocks={blocks} />
+    </section>
+  )
+}
 // Cell text — the CSV prints exactly this. Blank for nothing, "?" for unknown, one decimal otherwise.
 const gridCell = (v) => v == null ? '?' : Math.abs(v) < 0.05 ? '' : fmtT(v)
 const gridSize = (s) => s ? s.replace('x', '×') : '—'
@@ -4373,7 +4596,184 @@ const monthWindow = (month, todayIso) => {
   return { from: `${month}-01`, to: last < todayIso ? last : todayIso }
 }
 
-function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils = [], skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS }) {
+// ── Raw material, FM / MM / SM sub-tab (#382): the split drawn as the grid, then Raw material by plant ──────
+// Everything is read off `fmMmSmRawMaterial` / `fmMmSmRawRows` (calc); nothing is computed here but the layout.
+const FM_MM_SM_RAW_MEASURES = [['required', 'Production required', SALES_GRID_TONE.required],
+  ['available', 'Raw material available', SALES_GRID_TONE.coil], ['rawRequired', 'Raw material required', 'bg-amber-50 dark:bg-amber-900/30']]
+const fmMmSmRawShareTip = (c) => `Shared slit coil, split between the sizes it fits (display only; method confirmed by the plant, 18-Nov-2026): ${
+  c.shares.map(s => `${fmtT(s.weight)} T from ${s.name}’s coil that fits ${s.sizes.map(gridSize).join(', ')}`).join('; ')}`
+// One raw-material grid: the split's cells laid out by `fmMmSmRawRows`, cut by the Section / Size / Thickness filters.
+// `byBlocks` (By FM / MM / SM tab only): drawn in the Dashboard's blocks (`FmMmSmBlockTable`); elsewhere one group per thickness.
+function FmMmSmRawTable({ raw, name, cut, landed, empty, byBlocks = false }) {
+  const g = fmMmSmRawRows(raw, cut)
+  const th = 'px-1.5 py-0.5 font-semibold whitespace-nowrap'
+  const td = 'px-1.5 py-0.5'
+  const hd = 'px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom min-w-[3.25rem] max-w-[4.5rem] text-right'
+  const rows = [...g.rows, { section: '', size: 'Total', cells: {}, total: g.total, isTotal: true }]
+  if (!g.rows.length) return <p className="text-sm text-slate-400 py-2 text-center">{empty}</p>
+  if (byBlocks) return (
+    <FmMmSmBlockTable name={name} thicknesses={g.thicknesses} rows={rows} blocks={[
+      { key: 'days', label: `FG days of cover · ${FM_MM_SM_NAME}`, tip: FM_MM_SM_TAG_TIP, tone: FM_MM_SM_DAYS_TONE,
+        cell: (r, k, edge) => r.isTotal || !r.cells[k] ? <td className={`${td} ${edge}`} />
+          : <FmMmSmCell td={td} edge={!!edge} right label={fmMmSmCellLabel(landed[`${r.section}|${r.size}|${k}`] || [])} cellKey={`${r.section}|${r.size}|${k}`} /> },
+      ...FM_MM_SM_RAW_MEASURES.map(([m, label, tone]) => ({ key: m, label, tone, total: r => r.total[m],
+        cell: (r, k, edge) => {
+          const c = r.isTotal ? g.colTotals[k] : r.cells[k]
+          const sharedMark = m === 'available' && c?.shared
+          return <td data-raw-shared={sharedMark ? 'true' : undefined} title={sharedMark ? fmMmSmRawShareTip(c) : undefined}
+            className={`${td} text-right tabular-nums whitespace-nowrap ${edge} ${sharedMark ? 'underline decoration-dotted cursor-help' : ''}`}>{c ? gridCell(c[m]) : ''}</td>
+        } })),
+    ]} />
+  )
+  return (
+    <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+      <table className="min-w-full text-[11px] [&_thead]:text-[10px]" aria-label={name}>
+        <thead className="sticky top-0 z-10">
+          <tr className="text-slate-600 dark:text-slate-200">
+            <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
+            <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+            {g.thicknesses.map(k => <th key={k} colSpan={FM_MM_SM_RAW_MEASURES.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{gridThk(k)} mm</th>)}
+            <th colSpan={FM_MM_SM_RAW_MEASURES.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>Total</th>
+          </tr>
+          <tr className="text-slate-600 dark:text-slate-200">
+            {[...g.thicknesses, 'total'].map(k => (
+              <React.Fragment key={k}>
+                {k !== 'total' && <th title={FM_MM_SM_TAG_TIP} className="px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom text-left border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800">FG days of cover · {FM_MM_SM_NAME}</th>}
+                {FM_MM_SM_RAW_MEASURES.map(([m, label, tone], i) => <th key={m} className={`${hd} ${k === 'total' && !i ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${tone}`}>{label}</th>)}
+              </React.Fragment>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+              <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
+              <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+              {g.thicknesses.map(k => {
+                const c = r.cells[k], key = `${r.section}|${r.size}|${k}`
+                return (
+                  <React.Fragment key={k}>
+                    {r.isTotal || !c ? <td className={`${td} border-l-2 border-slate-300 dark:border-slate-600`} />
+                      : <FmMmSmCell td={td} label={fmMmSmCellLabel(landed[key] || [])} cellKey={key} />}
+                    {FM_MM_SM_RAW_MEASURES.map(([m]) => {
+                      const sharedMark = m === 'available' && c?.shared
+                      return <td key={m} data-raw-shared={sharedMark ? 'true' : undefined} title={sharedMark ? fmMmSmRawShareTip(c) : undefined}
+                        className={`${td} text-right tabular-nums whitespace-nowrap ${sharedMark ? 'underline decoration-dotted cursor-help' : ''}`}>{c ? gridCell(c[m]) : ''}</td>
+                    })}
+                  </React.Fragment>
+                )
+              })}
+              {FM_MM_SM_RAW_MEASURES.map(([m], i) => <td key={m} className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(r.total[m])}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+// On the By FM / MM / SM tab (`sections` = `fmMmSmTagSections`) the grid stacks FM, MM, SM, No sales, Not tagged
+// like the two tagged chips (`fmMmSmRawBySection`); elsewhere it is one grid.
+function FmMmSmRawView({ raw, region, to, cut, landed, sections = null }) {
+  if (!raw) return null
+  if (!raw.known) return <p className="text-sm text-amber-600 dark:text-amber-400 py-6 text-center">No plant is known to serve {region}, so its raw material is unknown, not 0.</p>
+  const t = raw.totals
+  const name = `Raw material by size and thickness · ${region}`
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-amber-700 dark:text-amber-300"><strong>{FM_MM_SM_RAW_NOTE}</strong> The Sales Dashboard’s Raw material chip is not changed: it shows a shared coil in every size it fits.</p>
+      {sections ? (
+        <div className="space-y-5">
+          {fmMmSmRawBySection(raw, sections).map(s => (
+            <section key={s.key} aria-label={`Raw material · ${s.label} · ${region}`} data-fm-mm-sm-raw-section={s.key}>
+              <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-1">
+                {s.key === 'outside' ? s.label : <span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[s.key]}`}>{s.label}</span>}
+              </h4>
+              <FmMmSmRawTable raw={s.raw} name={`${name} · ${s.label}`} cut={cut} landed={landed} byBlocks
+                empty={`No raw material and no Production required on the ${s.label} cells for these filters.`} />
+            </section>
+          ))}
+        </div>
+      ) : <FmMmSmRawTable raw={raw} name={name} cut={cut} landed={landed} empty="No raw material and no Production required for these filters." />}
+      <FmMmSmWorkedOut>
+        <strong>Raw material available</strong> is each cell’s <em>share</em> of the slit coil on hand on {fmtIso(to)}, worked out <strong>one plant at a time</strong>:
+        a coil that fits one size goes to it whole; a coil that fits several (dotted underline — hover for the sizes and the plant) is split between them in
+        proportion to what each still needs of <em>its own plant’s</em> Production required, never more than a size needs there, any surplus shared equally.
+        A plant’s coil never covers another plant’s need. So the cells add up to the coil counted once:
+        {' '}{t.coils} slit coils ({t.shared} fit more than one size), {fmtT(t.fits)} T. <strong>This is not the Sales Dashboard’s <em>Slit coil that fits</em></strong>
+        {' '}(its Raw material chip, and the All chip here), which shows a shared coil in every size it fits — the two differ cell by cell. Nor is it Planning’s coil
+        hand-out, which gives a coil whole to one row: this split is display only and moves no coil.
+        {' '}<strong>Production required</strong> here is each plant’s own (what the Plant filter shows for that plant), added up, so it can read above the
+        FM / MM / SM grid’s figure where one plant’s finished stock would cover another plant’s orders.
+        {' '}<strong>Raw material required</strong> = Production required less Raw material available, plant by plant, never below 0, then added — so a cell
+        can hold more coil than it needs and still need coil, when the spare coil sits at the other plant. Where coils overlap it is no longer
+        optimistic from counting a coil twice; it still assumes the plant uses each shared coil as split here, and ignores yield loss from coil to tube.
+        Same plant, same standard thickness, strip within ±{WIDTH_TOL_MM} mm; a plant that does not serve {region} never counts.
+      </FmMmSmWorkedOut>
+      <FmMmSmRawPlants raw={raw} region={region} />
+    </div>
+  )
+}
+function FmMmSmRawPlants({ raw, region }) {
+  const th = 'px-2 py-1 font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-right'
+  const td = 'px-2 py-0.5 text-right tabular-nums whitespace-nowrap'
+  const sum = (p) => p.hr + p.fits + p.noSize + p.offGrid
+  const tot = raw.plants.reduce((a, p) => ({ hr: a.hr + p.hr, fits: a.fits + p.fits, noSize: a.noSize + p.noSize, offGrid: a.offGrid + p.offGrid }), { hr: 0, fits: 0, noSize: 0, offGrid: 0 })
+  return (
+    <div>
+      <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-1">Raw material by plant · {region}</h4>
+      {!raw.plants.length ? <p className="text-sm text-slate-400">No coil on hand at the plants serving {region}.</p> : (
+        <div className="overflow-auto border border-slate-200 dark:border-slate-700 rounded-md inline-block max-w-full">
+          <table className="text-xs" aria-label={`Raw material by plant · ${region}`}>
+            <thead className="text-slate-600 dark:text-slate-200">
+              <tr>
+                <th className={`${th} text-left`}>Plant</th>
+                <th className={th} title="HR coil on hand, not yet slit: it has no size yet">HR coil (not yet slit)</th>
+                <th className={th} title="Slit coil fitting a size on this region’s grid, counted once; split between the cells above">Slit coil that fits</th>
+                <th className={th} title="Slit coil whose strip matches no size in the SKU master">Fits no size</th>
+                <th className={th} title="Slit coil fitting only sizes in the SKU master that are not on this region’s grid">Off the grid</th>
+                <th className={th}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...raw.plants, { id: 'total', name: 'Total', ...tot, isTotal: true }].map(p => (
+                <tr key={p.id} className={`border-t border-slate-200 dark:border-slate-700 ${p.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                  <td className="px-2 py-0.5 text-left whitespace-nowrap">{p.name}</td>
+                  <td className={td}>{gridCell(p.hr)}</td>
+                  <td className={td} title={p.isTotal ? undefined : `${p.coils} slit coils, ${p.shared} fit more than one size`}>{gridCell(p.fits)}</td>
+                  <td className={td}>{gridCell(p.noSize)}</td>
+                  <td className={td}>{gridCell(p.offGrid)}</td>
+                  <td className={`${td} font-semibold`}>{gridCell(sum(p))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Optional props that serve the FM / MM / SM sub-tab (#384, #379–#382); left out, the grid is the Dashboard's, unchanged:
+//   region      fixes the grid to one region — its distributors' sales and its own stock pool (ADR-0006),
+//               the same scope as the Region filter on that region; the Region filter is not drawn
+//   tagRows     that region's `fmMmSmRows` — adds the FM / MM / SM view chip (the default) and, under the
+//               grid, the Tagged / Not tagged check and the SKUs not shown in the grid
+//   hideExport  no ⬇ CSV button anywhere
+//   statusRows  the SKUs of a Status key box (#379, `fmMmSmStatusCut`): every view keeps only the lines on their cells
+//   worklists   (#380, needs tagRows) the region's Make next and Stock stuck lists above the grid; a SKU clicked
+//               there is found in this grid
+//   byTag       (#381, with tagRows) adds the All measures chip, and under the two tagged chips draws the grid
+//               as stacked sections FM, MM, SM, No sales, Not tagged / Outside the plan (`fmMmSmTagSections`);
+//               the Raw material chip (#382) stacks the same sections
+function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils = [], skus, plants, stateRegions, distributors, distributor, month, selectedPlant = ALL_PLANTS,
+  region = null, tagRows = null, hideExport = false, statusRows = null, worklists = false, view = 'grid', exportRef = null,
+  showGrid = true, onFound = null }) {
+  // showGrid (FM / MM / SM): false on a lists-only screen; a SKU clicked there calls `onFound` to open the grid screen.
+  // `view` is a Dashboards sub-tab (ADR-0018): Size × Thickness, Production check or SKU list. `exportRef`: this
+  // grid's files go to the dashboard's one Export menu instead of its own ⬇ CSV buttons.
+  // Split by tag (ADR-0018, FM / MM / SM only): the grid as one table with FM, MM, SM, No sales and Not tagged as
+  // group rows — what the By FM / MM / SM tab's stacked grids were (#381).
+  const [byTag, setByTag] = useState(false)
   const todayStr = today()
   // Its own date range. It starts on the Month dropdown's month and follows it whenever that changes;
   // a date typed here moves only this table.
@@ -4385,8 +4785,14 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   const [sizes, setSizes] = useState([])
   const [thks, setThks] = useState([])
   const [plantNames, setPlantNames] = useState([])
-  const [show, setShow] = useState('all')
-  const [view, setView] = useState('grid')
+  const [show, setShow] = useState(tagRows ? FM_MM_SM_CHIP.key : 'all')
+  // On the sub-tab (#391) the sub-tab's own chips are in front and the Dashboard's (every other chip) sit under More.
+  const showList = tagRows ? [FM_MM_SM_CHIP, ...(byTag ? [FM_MM_SM_ALL_CHIP] : []), FM_MM_SM_RAW_CHIP, ...SALES_GRID_SHOW.filter(s => s.key !== 'raw')] : SALES_GRID_SHOW
+  const moreChips = tagRows ? SALES_GRID_SHOW.filter(s => s.key !== 'raw') : []
+  // Leaving the By FM / MM / SM tab (#381) with All measures on: back to the default chip, never a chip not drawn.
+  useEffect(() => { if (!byTag && show === FM_MM_SM_ALL_CHIP.key) setShow(FM_MM_SM_CHIP.key) }, [byTag, show])
+  // A region block's tables carry the region in their name, so two blocks on one screen stay apart.
+  const named = (s) => region ? `${s} · ${region}` : s
 
   // The distributor rows again, with the invoice window set to From…To (the table above reads the
   // month). Same function, same identities, so the Distributor dropdown's id finds its row here.
@@ -4396,10 +4802,12 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   // Which distributors' sales go in, and whose plants' stock. A picked distributor overrides the
   // Region filter — its region is a fact, not a choice.
   const scope = useMemo(() => {
+    // A region block (#384) is the Region filter set to its region, fixed: one region per run.
+    if (region) return { rows: allRows.filter(r => r.region === region), stockRegions: [region] }
     if (picked) return { rows: [picked], stockRegions: [picked.region] }
     if (regions.length) return { rows: allRows.filter(r => regions.includes(r.region)), stockRegions: regions }
     return { rows: allRows, stockRegions: null }
-  }, [picked, regions, allRows])
+  }, [region, picked, regions, allRows])
   // The Plant filter's choices: the plants serving the regions in view (every plant when no region
   // is picked), cut to the header's plant when the header is on one. An Unmapped area offers none.
   const plantOptions = useMemo(() => {
@@ -4426,21 +4834,78 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
     return salesByDistributor(filterByPlants(orders, pickedPlants), filterDispatchesByPlants(dispatches, pickedPlants), '', skus,
       { stateRegions, plants, distributors, from, to }).filter(r => ids.has(r.id))
   }, [pickedPlants, scope, orders, dispatches, skus, stateRegions, plants, distributors, from, to])
-  const built = useMemo(() => salesSizeLines({ distRows: salesRows, productions, dispatches, skus, plants, from, to, today: todayStr,
-    stockRegions: scope.stockRegions, stockPlants: pickedPlants }),
-    [salesRows, scope, pickedPlants, productions, dispatches, skus, plants, from, to, todayStr])
-  const options = useMemo(() => salesGridOptions(built.lines), [built])
-  const showDef = SALES_GRID_SHOW.find(s => s.key === show) || SALES_GRID_SHOW[0]
+  const regionRun = useMemo(() => salesSizeLines({ distRows: salesRows, productions, dispatches, skus, plants, from, to, today: todayStr,
+    stockRegions: scope.stockRegions, stockPlants: pickedPlants }), [salesRows, scope, pickedPlants, productions, dispatches, skus, plants, from, to, todayStr])
+  // A Status key box (#379) narrows every view to its SKUs' cells.
+  const gridRun = useMemo(() => statusRows ? { ...regionRun, lines: fmMmSmStatusLines(regionRun.lines, statusRows) } : regionRun, [regionRun, statusRows])
+  // Raw material split (#382), sub-tab only: on the region's WHOLE grid (a Status key box never moves a share),
+  // the block's coil as of To under its plant filters, split ONE PLANT AT A TIME against that plant's own
+  // Production required (a plant's coil never covers another plant's need). Display only; nothing is saved.
+  const rawSplitOn = !!tagRows && !!region && (show === FM_MM_SM_RAW_CHIP.key || worklists)
+  const requiredByPlant = useMemo(() => !rawSplitOn ? null : fmMmSmRequiredByPlant({ orders, dispatches, productions, skus, plants,
+    stateRegions, distributors, from, to, today: todayStr, region, stockPlants: pickedPlants, distIds: scope.rows.map(r => r.id) }),
+  [rawSplitOn, orders, dispatches, productions, skus, plants, stateRegions, distributors, from, to, todayStr, region, pickedPlants, scope])
+  const rawSplit = useMemo(() => !rawSplitOn ? null : fmMmSmRawMaterial({ coils, babyCoils, productions, skus, plants, to, today: todayStr,
+    region, stockPlants: pickedPlants, gridKeys: regionRun.lines.map(l => `${l.section}|${l.size}`),
+    requiredByPlant: regionRun.required === null ? null : requiredByPlant }),
+  [rawSplitOn, coils, babyCoils, productions, skus, plants, to, todayStr, region, pickedPlants, regionRun, requiredByPlant])
+  const options = useMemo(() => salesGridOptions(gridRun.lines), [gridRun])
+  const showDef = showList.find(s => s.key === show) || showList[0]
   const blocks = showDef.measures
   // A line blank in every block on show is left out, so "Stock flow" does not list sizes that only
   // carry orders. Totals are of the kept lines, and the hidden figures are blank anyway.
-  const lines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
-    .filter(l => blocks.some(m => {
-      // Production required lives on the cell, not the SKU: a line counts when its cell needs any.
-      const v = m.key === 'required' ? (built.required === null ? null : built.required.get(salesGridCellKey(l)) || 0) : l[m.key]
-      return v == null || Math.abs(v) >= 0.05
-    })), [built, sections, sizes, thks, blocks])
-  const pivot = useMemo(() => salesSizePivot(lines, built.required), [lines, built])
+  const keepShown = useCallback((ls, measures) => ls.filter(l => measures.some(m => {
+    // Production required lives on the cell, not the SKU: a line counts when its cell needs any.
+    const v = m.key === 'required' ? (gridRun.required === null ? null : gridRun.required.get(salesGridCellKey(l)) || 0) : l[m.key]
+    return v == null || Math.abs(v) >= 0.05
+  })), [gridRun])
+  const lines = useMemo(() => keepShown(filterSalesLines(gridRun.lines, { sections, sizes, thicknesses: thks.map(Number) }), blocks),
+    [gridRun, sections, sizes, thks, blocks, keepShown])
+  const pivot = useMemo(() => salesSizePivot(lines, gridRun.required), [lines, gridRun])
+  // FM / MM / SM sub-tab (#384): the region's SKUs joined to the cells of the FM / MM / SM view — the same
+  // lines that view draws (Section / Size / Thickness filters, its blank-line rule), whatever chip is on,
+  // so the Tagged / Not tagged check always adds up to that view's Total.
+  const tagJoin = useMemo(() => {
+    if (!tagRows) return null
+    const cut = { sections, sizes, thicknesses: thks.map(Number) }
+    return fmMmSmJoin(fmMmSmCut(tagRows, cut), keepShown(filterSalesLines(gridRun.lines, cut), FM_MM_SM_CHIP.measures))
+  }, [tagRows, gridRun, sections, sizes, thks, keepShown])
+  // Make next · Stock stuck (#380): the region's two lists, both orders, with this grid's own cell figures.
+  const worklistsOn = worklists && !!tagRows
+  const lists = useMemo(() => !worklistsOn ? null : {
+    priority: fmMmSmWorklists(statusRows || tagRows, { gridLines: gridRun.lines, required: gridRun.required, raw: rawSplit }),
+    size: fmMmSmWorklists(statusRows || tagRows, { order: 'size', gridLines: gridRun.lines, required: gridRun.required, raw: rawSplit }),
+  }, [worklistsOn, tagRows, statusRows, gridRun, rawSplit])
+  // A SKU clicked in a list is found in the grid: Size × Thickness, the FM / MM / SM view, the filters cleared
+  // when they cut it, then its cell scrolled to and ringed for a moment. A SKU the grid has no cell for says why.
+  const gridRef = useRef(null)
+  const [found, setFound] = useState(null)
+  const wholeJoin = useMemo(() => !worklistsOn ? null : fmMmSmJoin(tagRows, keepShown(gridRun.lines, FM_MM_SM_CHIP.measures)), [worklistsOn, tagRows, gridRun, keepShown])
+  const findSku = useCallback((row) => {
+    const miss = wholeJoin?.notShown.find(r => r.id === row.id)
+    if (miss || row.cellKey == null) { setFound({ key: null, id: row.id, note: fmMmSmNotShownReason(miss || row, selectedPlant !== ALL_PLANTS || !!pickedPlants) || 'not on the grid', at: Date.now() }); return }
+    setShow(FM_MM_SM_CHIP.key); setByTag(false) // the worklists sit on a Size × Thickness screen; the cell is found in the single grid
+    if (!fmMmSmCut([row], { sections, sizes, thicknesses: thks.map(Number) }).length) { setSections([]); setSizes([]); setThks([]) }
+    setFound({ key: row.cellKey, id: row.id, note: '', at: Date.now() })
+    onFound?.()
+  }, [wholeJoin, sections, sizes, thks, selectedPlant, pickedPlants, onFound])
+  useEffect(() => {
+    if (!found) return undefined
+    if (found.key) {
+      const el = gridRef.current?.querySelector(`[data-cell-key="${CSS.escape(found.key)}"]`)
+      if (el) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
+    }
+    const t = setTimeout(() => setFound(f => (f && f.at === found.at ? null : f)), found.key ? 2500 : 6000)
+    return () => clearTimeout(t)
+  }, [found, showGrid])
+  // By FM / MM / SM tab (#381): the same lines and SKUs as tagJoin, split into the tag sections.
+  const tagSections = useMemo(() => {
+    if (!byTag || !tagRows) return null
+    const cut = { sections, sizes, thicknesses: thks.map(Number) }
+    const rows = fmMmSmCut(tagRows, cut)
+    const ls = keepShown(filterSalesLines(gridRun.lines, cut), FM_MM_SM_CHIP.measures)
+    return fmMmSmTagSections({ rows, join: fmMmSmJoin(rows, ls), lines: ls, required: gridRun.required })
+  }, [byTag, tagRows, gridRun, sections, sizes, thks, keepShown])
   // ── Raw material available (#348): coil blocks, one per plant, under All and Raw material. Slit
   // coil sits in the size row it can make; the Section / Size filters cut the rows (a coil whose only
   // sizes are cut gets its own row under Total), the Thickness filter cuts the coil itself.
@@ -4450,32 +4915,32 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
     const key = (l) => `${l.section}|${l.size}`
     return salesCoilBlocks({ coils, babyCoils, productions, skus, plants, to, today: todayStr,
       stockRegions: scope.stockRegions, stockPlants: pickedPlants,
-      gridKeys: built.lines.map(key), visibleKeys: filterSalesLines(built.lines, { sections, sizes }).map(key),
+      gridKeys: gridRun.lines.map(key), visibleKeys: filterSalesLines(gridRun.lines, { sections, sizes }).map(key),
       thicknesses: thks.map(Number) })
-  }, [coilOn, coils, babyCoils, productions, skus, plants, to, todayStr, scope, pickedPlants, built, sections, sizes, thks])
+  }, [coilOn, coils, babyCoils, productions, skus, plants, to, todayStr, scope, pickedPlants, gridRun, sections, sizes, thks])
   // The grid's rows: the pivot's, plus any size row only coil can make (blank in the blocks on show).
   const coilRows = useMemo(() => {
     if (!coil) return pivot.rows
     const have = new Set(pivot.rows.map(r => `${r.section}|${r.size}`))
     const want = [...new Set(coil.plants.flatMap(p => Object.keys(p.rows)))].filter(k => !have.has(k))
     if (!want.length) return pivot.rows
-    const shape = new Map(built.lines.map(l => [`${l.section}|${l.size}`, l]))
+    const shape = new Map(gridRun.lines.map(l => [`${l.section}|${l.size}`, l]))
     const extra = want.map(k => ({ section: shape.get(k).section, size: shape.get(k).size, cells: {}, total: Object.fromEntries([...SALES_GRID_MEASURES, ...SALES_GRID_AGEING].map(m => [m.key, 0])), thickness: null, skuCode: '' }))
     return [...pivot.rows, ...extra].sort(salesGridOrder)
-  }, [coil, pivot, built])
+  }, [coil, pivot, gridRun])
   const coilCols = useMemo(() => !coil ? pivot.thicknesses
     : [...new Set([...pivot.thicknesses, ...coil.thicknesses.map(String)])].sort((a, b) => Number(a) - Number(b)), [coil, pivot])
   const gridEmpty = !lines.length && !(coil && coil.plants.length)
   // FG ageing, below the grid: the same lines under the same Section / Size / Thickness filters, kept
   // when they hold any aged stock (or it is unknown). Not cut by Show — it is its own table.
-  const ageLines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
-    .filter(l => l.aged == null || Math.abs(l.aged) >= 0.05), [built, sections, sizes, thks])
+  const ageLines = useMemo(() => filterSalesLines(gridRun.lines, { sections, sizes, thicknesses: thks.map(Number) })
+    .filter(l => l.aged == null || Math.abs(l.aged) >= 0.05), [gridRun, sections, sizes, thks])
   const agePivot = useMemo(() => salesSizePivot(ageLines, null), [ageLines])
   // Production check (view 'check'): Invoiced, Production and Closing side by side under each
   // thickness, to check production went into the sizes that sell. The same figures as the Dispatch,
   // Production and Closing blocks — only the layout differs. Not cut by Show.
-  const checkLines = useMemo(() => filterSalesLines(built.lines, { sections, sizes, thicknesses: thks.map(Number) })
-    .filter(l => SALES_GRID_CHECK.some(([k]) => l[k] == null || Math.abs(l[k]) >= 0.05)), [built, sections, sizes, thks])
+  const checkLines = useMemo(() => filterSalesLines(gridRun.lines, { sections, sizes, thicknesses: thks.map(Number) })
+    .filter(l => SALES_GRID_CHECK.some(([k]) => l[k] == null || Math.abs(l[k]) >= 0.05)), [gridRun, sections, sizes, thks])
   const checkPivot = useMemo(() => salesSizePivot(checkLines, null), [checkLines])
   const requiredOn = blocks.some(m => SALES_GRID_REQUIRED.includes(m))
   const regionOptions = useMemo(() => [...REGIONS, UNMAPPED_REGION].filter(r => allRows.some(x => x.region === r)), [allRows])
@@ -4484,7 +4949,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   const blockLabel = (m) => m.key === 'opening' ? `${m.label} · ${fmtIso(from)}` : m.key === 'closing' ? `${m.label} · ${fmtIso(to)}`
     : m.key === 'dispatch' || m.key === 'production' ? `${m.label} · ${span}` : m.label
   const pickedNames = pickedPlants ? pickedPlants.map(id => plantLabel(id)) : []
-  const title = `${picked ? distributorCode(picked.customer) : regions.length ? regions.join(' + ') : 'All Distributors'}${pickedNames.length ? ` · ${pickedNames.join(' + ')}` : ''}`
+  const title = `${region || (picked ? distributorCode(picked.customer) : regions.length ? regions.join(' + ') : 'All Distributors')}${pickedNames.length ? ` · ${pickedNames.join(' + ')}` : ''}`
   const fileTag = `${from}-to-${to}${picked ? `-${distributorCode(picked.customer).replace(/[^\w-]+/g, '_')}` : regions.length ? `-${regions.join('-')}` : ''}${pickedNames.length ? `-${pickedNames.join('-').replace(/[^\w-]+/g, '_')}` : ''}`
 
   const gridRows = [...coilRows, { section: '', size: 'Total', cells: pivot.total.cells, total: pivot.total.total, isTotal: true }]
@@ -4492,7 +4957,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   const downloadAgeing = () => downloadCSV(`sales-size-fg-ageing-${fileTag}.csv`,
     ['Section', 'Size', ...SALES_GRID_AGEING.flatMap(m => [...agePivot.thicknesses.map(t => `${m.label} ${gridThk(t)}`), `${m.label} Total`])],
     ageRows.map(r => [r.isTotal ? '' : (r.section || '—'), r.isTotal ? 'Total' : gridSize(r.size),
-      ...SALES_GRID_AGEING.flatMap(m => [...agePivot.thicknesses.map(t => gridCell(r.cells[t]?.[m.key] ?? (built.stockKnown ? 0 : null))), gridCell(r.total[m.key])])]))
+      ...SALES_GRID_AGEING.flatMap(m => [...agePivot.thicknesses.map(t => gridCell(r.cells[t]?.[m.key] ?? (gridRun.stockKnown ? 0 : null))), gridCell(r.total[m.key])])]))
   const listCols = [
     { label: 'SKU', text: l => l.skuCode },
     { label: 'Description', left: true, wrap: true, text: l => l.description },
@@ -4514,7 +4979,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   })[k]
   const checkRows = [...checkPivot.rows, { section: '', size: 'Total', cells: checkPivot.total.cells, total: checkPivot.total.total, isTotal: true }]
   // A missing cell is 0, except a STOCK figure whose stock is unknown ("?"). Pending is never unknown.
-  const checkCell = (r, t, k) => (t === 'total' ? r.total[k] : r.cells[t]?.[k]) ?? (built.stockKnown || k === 'pending' ? 0 : null)
+  const checkCell = (r, t, k) => (t === 'total' ? r.total[k] : r.cells[t]?.[k]) ?? (gridRun.stockKnown || k === 'pending' ? 0 : null)
   // Coil blocks: one per plant. A cell is { weight, alsoFits }; the rows under Total are per plant.
   const coilCell = (pl, r, t) => r.isTotal ? (pl.total.cells[t] ?? 0) : (pl.rows[`${r.section}|${r.size}`]?.cells[t]?.weight ?? 0)
   const coilRowTotal = (pl, r) => r.isTotal ? pl.total.total : (pl.rows[`${r.section}|${r.size}`]?.total ?? 0)
@@ -4554,49 +5019,117 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
   const areaPlants = pickedNames.length ? pickedNames : (scope.stockRegions || []).filter(r => r !== UNMAPPED_REGION)
     .flatMap(r => [...plantsServingRegion(r, plantMaster(plants))]).map(id => plantLabel(id))
 
-  return (
-    <Section title={`Size × Thickness — ${title}`} actions={<Btn size="sm" variant="ghost" disabled={view === 'check' ? !checkLines.length : view === 'grid' ? gridEmpty : !lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
+  // FG age (#392): the Dashboard draws it open under the grid; the FM / MM / SM sub-tab folds it (open by itself on Make next · Stock stuck).
+  const ageHead = (
+      <div className="mt-5 mb-2 flex items-center gap-2">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">FG age · as of {fmtIso(to)}</h3>
+        <span className="text-xs text-slate-500 dark:text-slate-400">days since production, of the stock still on hand</span>
+        {!hideExport && !exportRef && <span className="ml-auto"><Btn size="sm" variant="ghost" disabled={!ageLines.length} onClick={downloadAgeing}>⬇ CSV</Btn></span>}
+      </div>
+  )
+  const ageBody = (
+      !ageLines.length ? <p className={DASH_EMPTY}>No finished stock on hand for these filters.</p> : (
+        <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+          <table className="min-w-full text-xs" aria-label={named('FG age by size and thickness')}>
+            <thead className="sticky top-0 z-10">
+              <tr className="text-slate-600 dark:text-slate-200">
+                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
+                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+                {SALES_GRID_AGEING.map(m => <th key={m.key} colSpan={agePivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{m.label}</th>)}
+              </tr>
+              <tr className="text-slate-600 dark:text-slate-200">
+                {SALES_GRID_AGEING.map(m => (
+                  <React.Fragment key={m.key}>
+                    {agePivot.thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>{gridThk(t)}</th>)}
+                    <th className={`${th} text-right ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>Total</th>
+                  </React.Fragment>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ageRows.map(r => (
+                <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                  <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                  <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+                  {SALES_GRID_AGEING.map(m => (
+                    <React.Fragment key={m.key}>
+                      {agePivot.thicknesses.map((t, i) => {
+                        const v = r.cells[t]?.[m.key] ?? (gridRun.stockKnown ? 0 : null)
+                        return <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(v)}</td>
+                      })}
+                      <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(r.total[m.key])}</td>
+                    </React.Fragment>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+  )
+
+  if (exportRef) exportRef.current = [
+    { label: { check: 'Production check CSV', list: 'SKU list CSV' }[view] || 'Size × Thickness CSV', run: downloadGrid,
+      disabled: view === 'check' ? !checkLines.length : view === 'grid' ? gridEmpty : !lines.length, note: 'The view, blocks and filters on screen' },
+    ...(view === 'grid' ? [{ label: 'FG age CSV', run: downloadAgeing, disabled: !ageLines.length }] : []),
+  ]
+  const gridSection = (
+    <DashBlock title={title} actions={hideExport || exportRef ? null : <Btn size="sm" variant="ghost" disabled={view === 'check' ? !checkLines.length : view === 'grid' ? gridEmpty : !lines.length} onClick={downloadGrid}>⬇ CSV</Btn>}>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <label className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">From
           <input type="date" aria-label="Size grid from" value={from} max={to}
             onChange={e => e.target.value && setRange(r => ({ ...r, from: e.target.value }))}
-            className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+            className="px-2 h-8 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
         </label>
         <label className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">To
           <input type="date" aria-label="Size grid to" value={to} min={from} max={todayStr}
             onChange={e => e.target.value && setRange(r => ({ ...r, to: e.target.value }))}
-            className="px-2 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
+            className="px-2 h-8 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100" />
         </label>
-        {picked
-          ? <span className="px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 text-sm text-slate-500 dark:text-slate-400" title="Set by the Distributor dropdown above">Region: {picked.region} (the distributor’s)</span>
-          : <MultiSelectFilter label="Region" options={regionOptions} selected={regions} onChange={setRegions} />}
-        <MultiSelectFilter label="Plant" options={plantOptions.map(p => p.name)} selected={plantNames} onChange={setPlantNames} />
-        <MultiSelectFilter label="Section" options={options.sections} selected={sections} onChange={setSections} />
-        <MultiSelectFilter label="Size" options={options.sizes} selected={sizes} onChange={setSizes} />
-        <MultiSelectFilter label="Thickness" options={options.thicknesses.map(t => t.toFixed(1))} selected={thks} onChange={setThks} />
+        {region ? null : picked
+          ? <span className="px-3 h-8 inline-flex items-center rounded-md border border-slate-200 dark:border-slate-700 text-sm text-slate-500 dark:text-slate-400" title="Set by the Distributor dropdown above">Region: {picked.region} (the distributor’s)</span>
+          : <MultiSelectFilter label="Region" options={regionOptions} selected={regions} onChange={setRegions} compact />}
+        <MultiSelectFilter label="Plant" options={plantOptions.map(p => p.name)} selected={plantNames} onChange={setPlantNames} compact />
+        <MultiSelectFilter label="Section" options={options.sections} selected={sections} onChange={setSections} compact />
+        <MultiSelectFilter label="Size" options={options.sizes} selected={sizes} onChange={setSizes} compact />
+        <MultiSelectFilter label="Thickness" options={options.thicknesses.map(t => t.toFixed(1))} selected={thks} onChange={setThks} compact />
       </div>
-      <div className="flex flex-wrap items-center gap-1.5 mb-3" role="group" aria-label="Show">
-        {view !== 'check' && <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Show:</span>}
-        {view !== 'check' && SALES_GRID_SHOW.map((s, i) => (
-          <React.Fragment key={s.key}>
-            {i === SALES_GRID_SHOW.findIndex(x => x.key === 'raw') + 1 && <span className="mx-1 h-5 w-px bg-slate-300 dark:bg-slate-600" aria-hidden="true" />}
-            <button type="button" aria-pressed={show === s.key} onClick={() => setShow(s.key)}
-              className={`px-2.5 py-1 rounded-md text-xs font-medium ${show === s.key ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{s.label}</button>
-          </React.Fragment>
-        ))}
-        <span className="ml-auto flex gap-1.5">
-          {[['grid', 'Size × Thickness'], ['check', 'Production check'], ['list', 'SKU list']].map(([k, label]) => (
-            <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)}
-              className={`px-2.5 py-1 rounded-md text-xs font-medium ${view === k ? 'bg-slate-700 text-white dark:bg-slate-200 dark:text-slate-900' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200'}`}>{label}</button>
-          ))}
-        </span>
+      <div className="flex flex-wrap items-center gap-2 mb-3" role="group" aria-label="Show">
+        {view !== 'check' && <span className="text-sm text-slate-500 dark:text-slate-400">Show</span>}
+        {/* #391: on the FM / MM / SM sub-tab the Dashboard's own chips sit under More; the sub-tab's chips stay in front. */}
+        {view !== 'check' && tagRows && (
+          <>
+            <Segmented label="Show view" value={show} onChange={setShow} options={showList.filter(s => !moreChips.includes(s)).map(s => [s.key, s.label])} />
+            <PopMenu label="More" on={moreChips.includes(showDef)} className="left-0 min-w-[12rem] py-1">
+              {close => moreChips.map(s => (
+                <button key={s.key} type="button" aria-pressed={show === s.key} onClick={() => { setShow(s.key); close() }}
+                  className={`block w-full text-left px-3 py-1.5 text-xs ${show === s.key ? 'bg-indigo-50 dark:bg-indigo-900/40 font-semibold' : 'hover:bg-slate-50 dark:hover:bg-slate-700'}`}>{s.label}</button>
+              ))}
+            </PopMenu>
+            {view === 'grid' && (showDef.tagged || showDef.rawSplit) && (
+              <label className="ml-2 inline-flex items-center gap-1.5 h-8 text-sm text-slate-700 dark:text-slate-200 cursor-pointer"
+                title={`One grid, its rows grouped FM, MM, SM, No sales, then ${FM_MM_SM_OUTSIDE}. The groups add up to the region’s grid.`}>
+                <input type="checkbox" role="switch" checked={byTag} onChange={e => setByTag(e.target.checked)} className="accent-indigo-600" />
+                Split by tag
+              </label>
+            )}
+          </>
+        )}
+        {/* Two switches: the families (All … Raw material), then the single measures — the old separator. */}
+        {view !== 'check' && !tagRows && (() => {
+          const cut = showList.findIndex(x => x.key === 'raw') + 1
+          return <>
+            <Segmented label="Show families" value={show} onChange={setShow} options={showList.slice(0, cut).map(s => [s.key, s.label])} />
+            <Segmented label="Show one measure" value={show} onChange={setShow} options={showList.slice(cut).map(s => [s.key, s.label])} />
+          </>
+        })()}
       </div>
 
       {view === 'check' ? (!checkLines.length
-          ? <p className="text-sm text-slate-400 py-6 text-center">Nothing produced, invoiced or in stock for these filters.</p>
+          ? <p className={DASH_EMPTY}>Nothing produced, invoiced or in stock for these filters.</p>
           : (
           <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-            <table className="min-w-full text-xs" aria-label="Production check by size and thickness">
+            <table className="min-w-full text-xs" aria-label={named('Production check by size and thickness')}>
               <thead className="sticky top-0 z-10">
                 <tr className="text-slate-600 dark:text-slate-200">
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
@@ -4626,16 +5159,66 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
             </table>
           </div>
         ))
-        : view === 'list' && show === 'raw' ? <p className="text-sm text-slate-500 dark:text-slate-400 py-6 text-center"><strong>Raw material</strong> is coil, not SKUs — a slit coil fits sizes, not codes — so the SKU list leaves it out. Switch to Size × Thickness.</p>
-        : (view === 'grid' ? gridEmpty : !lines.length) ? <p className="text-sm text-slate-400 py-6 text-center">{view === 'grid' && show === 'raw' ? 'No raw material on hand for these filters.' : 'Nothing stocked, produced, invoiced or on order for these filters.'}</p>
+        : view === 'grid' && showDef.rawSplit
+          ? <FmMmSmRawView raw={rawSplit} region={region} to={to} cut={{ sections, sizes, thicknesses: thks.map(Number) }} landed={tagJoin?.landed || {}} sections={tagSections} />
+        : view === 'grid' && tagSections && showDef.tagged
+          ? <FmMmSmTagSplitTable sections={tagSections} region={region} chip={showDef} required={gridRun.required} stockKnown={gridRun.stockKnown} blockLabel={blockLabel} />
+        : view === 'list' && (show === 'raw' || showDef.rawSplit) ? <p className="text-sm text-slate-500 dark:text-slate-400 py-6 text-center"><strong>Raw material</strong> is coil, not SKUs — a slit coil fits sizes, not codes — so the SKU list leaves it out. Switch to Size × Thickness.</p>
+        : (view === 'grid' ? gridEmpty : !lines.length) ? <p className={DASH_EMPTY}>{view === 'grid' && show === 'raw' ? 'No raw material on hand for these filters.' : 'Nothing stocked, produced, invoiced or on order for these filters.'}</p>
         : view === 'list' ? <>
             {showDef.coil && <p className="mb-2 text-xs text-slate-500 dark:text-slate-400"><strong>Raw material</strong> is coil, not SKUs — a slit coil fits sizes, not codes — so the SKU list leaves it out. Switch to Size × Thickness.</p>}
             {requiredOn && <p className="mb-2 text-xs text-slate-500 dark:text-slate-400"><strong>Production required</strong> is worked out per cell of the grid, not per SKU, so the SKU list does not show it — switch to Size × Thickness.</p>}
-            <div className="max-h-[70vh] overflow-auto"><FlatTable label="Sales by SKU" cols={listCols} rows={lines} rowKey={l => l.key} /></div>
+            <div className="max-h-[70vh] overflow-auto"><FlatTable label={named('Sales by SKU')} cols={listCols} rows={lines} rowKey={l => l.key} /></div>
           </>
+        : showDef.tagged ? (
+          // FM / MM / SM view (#384): one group per thickness — tag + FG days of cover, then the chip's
+          // measures — then Total. The tag column is region-wide and as of today; the rest follow the
+          // Plant filter and From / To like every other block.
+          <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
+            <table className="min-w-full text-[11px] [&_thead]:text-[10px]" aria-label={named('Sales by size and thickness')}>
+              <thead className="sticky top-0 z-10">
+                <tr className="text-slate-600 dark:text-slate-200">
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
+                  <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
+                  {pivot.thicknesses.map(t => <th key={t} colSpan={blocks.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>{gridThk(t)} mm</th>)}
+                  <th colSpan={blocks.length} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>Total</th>
+                </tr>
+                <tr className="text-slate-600 dark:text-slate-200">
+                  {[...pivot.thicknesses, 'total'].map(t => (
+                    <React.Fragment key={t}>
+                      {t !== 'total' && <th title={FM_MM_SM_TAG_TIP} className={`px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom text-left border-l-2 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800`}>FG days of cover · {FM_MM_SM_NAME}</th>}
+                      {blocks.map((m, i) => <th key={m.key} title={blockLabel(m)} className={`px-1.5 py-0.5 font-semibold whitespace-normal leading-tight align-bottom min-w-[3.25rem] max-w-[4.5rem] text-right ${t === 'total' && !i ? 'border-l-2 border-slate-300 dark:border-slate-600' : ''} ${SALES_GRID_TONE[m.key]}`}>{m.label}</th>)}
+                    </React.Fragment>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {gridRows.map(r => (
+                  <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
+                    <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
+                    <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
+                    {pivot.thicknesses.map(t => (
+                      <React.Fragment key={t}>
+                        {r.isTotal || !r.cells[t]
+                          ? <td className={`${td} border-l-2 border-slate-300 dark:border-slate-600`} />
+                          : <FmMmSmCell td={td} label={fmMmSmCellLabel(tagJoin?.landed[`${r.section}|${r.size}|${t}`] || [])}
+                              cellKey={`${r.section}|${r.size}|${t}`} found={found?.key === `${r.section}|${r.size}|${t}`} />}
+                        {blocks.map(m => {
+                          const v = r.cells[t]?.[m.key] ?? (gridRun.stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
+                          return <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap ${red(v)}`}>{gridCell(v)}</td>
+                        })}
+                      </React.Fragment>
+                    ))}
+                    {blocks.map((m, i) => <td key={m.key} className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
         : (
           <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-            <table className="min-w-full text-xs" aria-label="Sales by size and thickness">
+            <table className="min-w-full text-xs" aria-label={named('Sales by size and thickness')}>
               <thead className="sticky top-0 z-10">
                 <tr className="text-slate-600 dark:text-slate-200">
                   <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
@@ -4666,7 +5249,7 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
                     {blocks.map(m => (
                       <React.Fragment key={m.key}>
                         {coilCols.map((t, i) => {
-                          const v = r.cells[t]?.[m.key] ?? (built.stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
+                          const v = r.cells[t]?.[m.key] ?? (gridRun.stockKnown || SALES_GRID_SALES.includes(m) ? 0 : null)
                           return <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(v)}`}>{gridCell(v)}</td>
                         })}
                         <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${coilCols.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${red(r.total[m.key])}`}>{gridCell(r.total[m.key])}</td>
@@ -4702,56 +5285,17 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
           </div>
         )}
 
-      <div className="mt-5 mb-2 flex items-center gap-2">
-        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">FG age · as of {fmtIso(to)}</h3>
-        <span className="text-xs text-slate-500 dark:text-slate-400">days since production, of the stock still on hand</span>
-        <span className="ml-auto"><Btn size="sm" variant="ghost" disabled={!ageLines.length} onClick={downloadAgeing}>⬇ CSV</Btn></span>
-      </div>
-      {!ageLines.length ? <p className="text-sm text-slate-400 py-4 text-center">No finished stock on hand for these filters.</p> : (
-        <div className="overflow-auto max-h-[70vh] border border-slate-200 dark:border-slate-700 rounded-md">
-          <table className="min-w-full text-xs" aria-label="FG age by size and thickness">
-            <thead className="sticky top-0 z-10">
-              <tr className="text-slate-600 dark:text-slate-200">
-                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-0 w-16 min-w-[4rem] max-w-[4rem]`}>Section</th>
-                <th rowSpan={2} className={`${th} text-left align-bottom bg-slate-100 dark:bg-slate-800 sticky left-16`}>Size</th>
-                {SALES_GRID_AGEING.map(m => <th key={m.key} colSpan={agePivot.thicknesses.length + 1} className={`${th} text-center border-l-2 border-slate-300 dark:border-slate-600 ${SALES_GRID_TONE[m.key]}`}>{m.label}</th>)}
-              </tr>
-              <tr className="text-slate-600 dark:text-slate-200">
-                {SALES_GRID_AGEING.map(m => (
-                  <React.Fragment key={m.key}>
-                    {agePivot.thicknesses.map((t, i) => <th key={t} className={`${th} text-right ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>{gridThk(t)}</th>)}
-                    <th className={`${th} text-right ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'} ${SALES_GRID_TONE[m.key]}`}>Total</th>
-                  </React.Fragment>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {ageRows.map(r => (
-                <tr key={r.isTotal ? 'total' : `${r.section}|${r.size}`} className={`border-t border-slate-200 dark:border-slate-700 ${r.isTotal ? 'font-semibold bg-slate-50 dark:bg-slate-900' : ''}`}>
-                  <td className={`${td} text-left whitespace-nowrap sticky left-0 bg-white dark:bg-slate-800 w-16 min-w-[4rem] max-w-[4rem]`}>{r.isTotal ? '' : (r.section || '—')}</td>
-                  <td className={`${td} text-left whitespace-nowrap sticky left-16 bg-white dark:bg-slate-800`}>{r.isTotal ? 'Total' : gridSize(r.size)}</td>
-                  {SALES_GRID_AGEING.map(m => (
-                    <React.Fragment key={m.key}>
-                      {agePivot.thicknesses.map((t, i) => {
-                        const v = r.cells[t]?.[m.key] ?? (built.stockKnown ? 0 : null)
-                        return <td key={t} className={`${td} text-right tabular-nums whitespace-nowrap ${i ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(v)}</td>
-                      })}
-                      <td className={`${td} text-right tabular-nums whitespace-nowrap font-semibold ${agePivot.thicknesses.length ? '' : 'border-l-2 border-slate-300 dark:border-slate-600'}`}>{gridCell(r.total[m.key])}</td>
-                    </React.Fragment>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/* The FG age table is drawn once (ADR-0018): Sales › Size × Thickness. Make next's FG age 75+ d still reads its figures. */}
+      {!tagRows && view === 'grid' && <>{ageHead}{ageBody}</>}
 
       {/* The reading guide, folded: every rule stays one click away, and the amber warnings below stay open. */}
       <details className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-        <summary className="cursor-pointer select-none font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white">How to read these tables</summary>
+        <summary className={HELP_SUMMARY}>How to read these tables</summary>
         <p className="mt-1">
         One row per section and size, one column per <strong>standard thickness</strong> (mm) inside each block — the indent plan’s layout. SKUs of one size and
-        standard thickness add up in one cell: 2.2 mm counts in 2.0; 2.8, 2.9 and 3.2 mm count in 3.0 (the Coil Tracker’s eight standards). The SKU list shows each SKU’s own thickness. <strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:
+        standard thickness add up in one cell: 2.2 mm counts in 2.0; 2.8, 2.9 and 3.2 mm count in 3.0 (the Coil Tracker’s eight standards). The SKU list shows each SKU’s own thickness. {region
+          ? <><strong>Sales</strong> blocks are {region}’s distributors’ orders and invoices:</>
+          : <><strong>Sales</strong> blocks follow the Distributor dropdown above{picked ? '' : ' and the Region filter'}:</>}
         Confirmed / Non-confirmed are today’s open order book (not dated, so not cut by the dates); Pending to Dispatch = Confirmed + Non-confirmed.
         {pickedNames.length ? <> With <strong>Plant</strong> = {pickedNames.join(' + ')}, every block is that plant’s: its stock, and the orders and invoices booked on it.</> : null}
         {' '}<strong>Stock flow</strong> is finished stock (produced − invoiced) from {fmtIso(from)} to {fmtIso(to)} at {pickedNames.length
@@ -4774,6 +5318,13 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
         take the oldest batches first and what is left is aged (the Dashboard’s FG age bands; 75+ d is past the Auction-list age). It does not follow Show or the From date.
         All ages equals Closing stock, except where a plant has invoiced a size beyond its production: that plant’s negative has no age, so All ages reads higher there.
         {' '}A <span className="text-red-600 dark:text-red-400 font-semibold">negative</span> stock is a size invoiced beyond what was recorded produced. Follows the header plant selector.
+        {tagRows && <>
+          {' '}<strong>{FM_MM_SM_CHIP.label}</strong> puts, under each thickness, the SKU’s {FM_MM_SM_NAME} tag and its FG days of cover (blended) first — whole days and
+          the tag, e.g. 7 d FM; hover for the bracket — then Closing stock, Dispatch, Pending to Dispatch and Production required. The tag and the days are
+          {' '}{region}’s, as of today: Current inventory now ÷ (Blended monthly rate ÷ 30), the Production Planning columns’ own figures, so neither the
+          Plant filter nor From / To changes them. Closing stock (as at To, can be negative) is a different stock from Current inventory (now).
+          A cell with figures and no SKU of the plan reads “—”: it is in the Not tagged / Outside the plan row below.
+        </>}
         </p>
       </details>
       {coilOn && coil && coil.known && (
@@ -4789,35 +5340,412 @@ function SalesSizeGrid({ orders, dispatches, productions, coils = [], babyCoils 
           <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants’ raw material to show — it is unknown, not 0. Map the state in the Region column of the Distributor-wise Sales table.
         </p>
       )}
-      {stockOn && !built.stockKnown && (
+      {stockOn && !gridRun.stockKnown && (
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
           <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants serve it and every stock figure reads “?” rather than 0 —
           unknown, not empty. Map the state in the Region column of the Distributor-wise Sales table.
         </p>
       )}
-      {requiredOn && built.stockKnown && built.unmappedPending >= 0.05 && (
+      {requiredOn && gridRun.stockKnown && gridRun.unmappedPending >= 0.05 && (
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-          <strong>{fmtT(built.unmappedPending)} T of orders are not counted in Production required</strong> — they belong to distributors whose state carries no
+          <strong>{fmtT(gridRun.unmappedPending)} T of orders are not counted in Production required</strong> — they belong to distributors whose state carries no
           region, so we cannot tell which plants’ stock covers them (unknown, not 0). Map the state in the Region column of the Distributor-wise Sales table.
         </p>
       )}
-      {(stockOn || requiredOn) && !built.stockKnown && !stockOn && (
+      {(stockOn || requiredOn) && !gridRun.stockKnown && !stockOn && (
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
           <strong>This distributor’s state carries no region</strong>, so we cannot tell which plants serve it and Production required reads “?” rather than a figure.
           Map the state in the Region column of the Distributor-wise Sales table.
         </p>
       )}
-      {stockOn && built.stockKnown && scope.stockRegions != null && !areaPlants.length && (
+      {stockOn && gridRun.stockKnown && scope.stockRegions != null && !areaPlants.length && (
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
           <strong>No plant serves {scope.stockRegions.join(' + ')}</strong>, so every stock figure is 0. That is the real position, not a loading error —
           which plants serve a region is set on the Masters tab.
         </p>
       )}
-    </Section>
+      {tagJoin && <FmMmSmCheck join={tagJoin} region={region} from={from} to={to} plantScoped={selectedPlant !== ALL_PLANTS || !!pickedPlants} />}
+    </DashBlock>
+  )
+  const grid = showGrid && <div ref={gridRef}>{gridSection}</div>
+  if (!lists) return grid || null
+  return (
+    <div className="space-y-4">
+      <FmMmSmWorklists region={region} lists={lists} onFind={findSku} found={found} to={to} />
+      {grid}
+    </div>
   )
 }
 
-function SalesDashboard({ orders, dispatches, skus, productions = [], coils = [], babyCoils = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, plants = [], distributors = [], selectedPlant = ALL_PLANTS, canWiden = true }) {
+// ── Make next · Stock stuck (#380): a region's two worklists, above its grid ─────────────────────────────
+// Read off `fmMmSmWorklists` (calc); nothing is computed here. The columns are lists (`FM_MM_SM_LIST_COLS`), so
+// Make next's Raw material available and required (#382) are two entries, not a second table.
+const fmMmSmSkuName = (r) => `${r.section} ${gridSize(fmMmSmGridSize(r))} · ${Number(r.thickness).toFixed(1)} mm`
+const fmMmSmListT = (v) => v == null ? '?' : fmtT(v)
+const FM_MM_SM_NO_STOCK_TIP = 'Sales and no stock (0 d, Running out): a real shortage, or a made-to-order SKU that is made only against demand. Check the order book before making it.'
+function FmMmSmCoverPill({ r }) {
+  if (r.coverKind === 'noUse') return <span data-cover="No use" className="text-slate-500 dark:text-slate-400">No use</span>
+  const i = PLANNING_COVER_WORDS.indexOf(r.bracket)
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      <span data-cover={r.bracket} className={`inline-flex items-center gap-1 rounded-full px-1.5 py-px leading-tight tabular-nums ${COVER_PILL[i] || ''}`}>
+        {i === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}{r.bracket} · {r.coverDays} d
+      </span>
+      {r.noStock && <span data-no-stock="true" title={FM_MM_SM_NO_STOCK_TIP} className="rounded border border-dashed border-red-400 px-1 text-[10px] leading-tight text-red-700 dark:text-red-300">{FM_MM_SM_NO_STOCK_MARK}</span>}
+    </span>
+  )
+}
+const FM_MM_SM_LIST_COLS = {
+  common: [
+    { key: 'tag', label: FM_MM_SM_NAME, left: true, cell: r => <span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[r.tag] || ''}`}>{r.tag}</span> },
+    { key: 'cover', label: 'FG days of cover (blended)', left: true, cell: r => <FmMmSmCoverPill r={r} /> },
+    { key: 'rate', label: 'Blended monthly rate (T)', cell: r => fmMmSmListT(r.rate) },
+    { key: 'inventory', label: 'Current inventory (T)', cell: r => fmMmSmListT(r.inventory) },
+  ],
+  makeNext: [{ key: 'required', label: 'Production required (T)', cell: r => fmMmSmListT(r.required), tip: (to) => `The grid cell’s: Pending to Dispatch less Closing stock on ${fmtIso(to)}, never below 0` },
+    // #382: the cell's share of the split slit coil, and what is still to get in as coil. The plant confirmed the split method on 18-Nov-2026.
+    { key: 'rawAvailable', label: 'Raw material available (T)', cell: r => fmMmSmListT(r.rawAvailable), tip: (to) => `The grid cell’s share of the slit coil on hand on ${fmtIso(to)}, a shared coil split between its sizes (the Raw material chip). ${FM_MM_SM_RAW_NOTE}` },
+    { key: 'rawRequired', label: 'Raw material required (T)', cell: r => fmMmSmListT(r.rawRequired), tip: () => `Production required less Raw material available, for the cell, never below 0. ${FM_MM_SM_RAW_NOTE}` }],
+  stockStuck: [{ key: 'age75', label: 'FG age 75+ d (T)', cell: r => fmMmSmListT(r.age75), tip: (to) => `The FG age grid’s 75+ d band for the cell, on ${fmtIso(to)}` }],
+}
+function FmMmSmWorklists({ region, lists, onFind, found, to }) {
+  const ids = new Set(['makeNext', 'stockStuck'].flatMap(k => lists.priority[k].groups.flatMap(g => g.sections.flatMap(s => s.rows.map(r => r.id)))))
+  const missed = found && !found.key && ids.has(found.id) ? lists.priority.makeNext.groups.concat(lists.priority.stockStuck.groups)
+    .flatMap(g => g.sections.flatMap(s => s.rows)).find(r => r.id === found.id) : null
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4">
+        <h3 className="text-base font-semibold text-slate-900 dark:text-white">Worklists · {region}</h3>
+        <FmMmSmKeyMenu />
+      </div>
+      {[['makeNext', 'Make next', 'Running out and Thin. Running out first, then Thin; FM before MM before SM; the biggest Blended monthly rate first.'],
+        ['stockStuck', 'Stock stuck', 'Heavy and Too much, the most Current inventory first; then No use — stock with no sales at all.']].map(([k, name, how]) => (
+        <FmMmSmWorklist key={k} listKey={k} name={name} how={how} region={region} lists={lists} onFind={onFind} to={to} />
+      ))}
+      {missed && (
+        <p role="status" className="text-xs text-amber-600 dark:text-amber-400">
+          <strong>{fmMmSmSkuName(missed)}</strong> has no cell in the {region} grid below — {found.note}. It is listed under “SKUs not shown in the grid”.
+        </p>
+      )}
+    </div>
+  )
+}
+function FmMmSmWorklist({ listKey, name, how, region, lists, onFind, to }) {
+  const [orders, setOrders] = useState({})
+  const list = lists.priority[listKey]
+  const cols = [...FM_MM_SM_LIST_COLS.common, ...FM_MM_SM_LIST_COLS[listKey]]
+  const th = 'px-2 py-1 font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800'
+  const td = 'px-2 py-0.5'
+  return (
+    <section aria-label={`${name} · ${region}`} className="rounded-md border border-slate-200 dark:border-slate-700">
+      <div className="px-3 py-2 flex flex-wrap items-baseline gap-x-3">
+        <h4 className="font-semibold text-slate-900 dark:text-white">{name}</h4>
+        <span data-testid="worklist-total" className="text-sm tabular-nums text-slate-700 dark:text-slate-200">{list.count} SKUs · {fmtT(list.inventory)} T Current inventory</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400">{how}</span>
+      </div>
+      {!list.count ? <p className={`px-3 ${DASH_EMPTY}`}>No SKU of {region} is {listKey === 'makeNext' ? 'Running out or Thin' : 'Heavy, Too much or No use'}.</p> : (
+        <div className="overflow-auto max-h-96 border-t border-slate-200 dark:border-slate-700">
+          <table className="min-w-full text-xs" aria-label={`${name} · ${region}`}>
+            <thead className="sticky top-0 z-10 text-slate-600 dark:text-slate-200">
+              <tr>
+                <th className={`${th} text-left`}>SKU</th>
+                {cols.map(c => <th key={c.key} title={c.tip ? c.tip(to) : undefined} className={`${th} ${c.left ? 'text-left' : 'text-right'}`}>{c.label}</th>)}
+              </tr>
+            </thead>
+            {list.groups.filter(g => g.count).map(g => (
+              <React.Fragment key={g.key}>
+                {list.groups.length > 1 && (
+                  <tbody>
+                    <tr className="border-t-2 border-slate-300 dark:border-slate-600">
+                      <th colSpan={cols.length + 1} className="px-2 py-1 text-left font-semibold text-slate-800 dark:text-slate-100">
+                        {g.label} <span className="font-normal tabular-nums">— {g.count} SKUs · {fmtT(g.inventory)} T</span>
+                      </th>
+                    </tr>
+                  </tbody>
+                )}
+                {g.sections.map(s => {
+                  const sk = `${g.key}|${s.section}`
+                  const order = orders[sk] || 'priority'
+                  const rows = order === 'size'
+                    ? (lists.size[listKey].groups.find(x => x.key === g.key)?.sections.find(x => x.section === s.section)?.rows || s.rows)
+                    : s.rows
+                  return (
+                    <tbody key={sk} data-section={s.section} data-group={g.key}>
+                      <tr className="border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
+                        <th colSpan={cols.length + 1} className="px-2 py-1 text-left font-semibold">
+                          <span className="inline-flex flex-wrap items-center gap-3">
+                            <span data-testid="worklist-section">{s.section} <span className="font-normal tabular-nums">— {s.count} SKUs · {fmtT(s.inventory)} T</span></span>
+                            <Segmented label={`${name} ${g.key === 'noUse' ? 'No use ' : ''}${s.section} order`} options={[['priority', 'Priority'], ['size', 'Size']]}
+                              value={order} onChange={v => setOrders(o => ({ ...o, [sk]: v }))} />
+                          </span>
+                        </th>
+                      </tr>
+                      {rows.map(r => (
+                        <tr key={r.id} data-sku={r.id} className="border-t border-slate-100 dark:border-slate-800">
+                          <td className={`${td} text-left whitespace-nowrap`}>
+                            <button type="button" onClick={() => onFind(r)} title={`Find ${fmMmSmSkuName(r)} in the ${region} grid`}
+                              className="text-indigo-700 dark:text-indigo-300 hover:underline">{fmMmSmSkuName(r)}</button>
+                          </td>
+                          {cols.map(c => <td key={c.key} className={`${td} ${c.left ? 'text-left' : 'text-right tabular-nums'} whitespace-nowrap`}>{c.cell(r)}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  )
+                })}
+              </React.Fragment>
+            ))}
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ── Sales tab, FM / MM / SM sub-tab (#384; spec #377, UI-PATTERNS "Sales tab — FM / MM / SM") ──────────
+// Admin only (accessFor's `fmMmSmSubTab`). Three inner tabs; each owns a content slot ABOVE the two region
+// blocks (#379 Status key, #380 Make next · Stock stuck, #381 By FM / MM / SM fill them), and every tab ends
+// with the same region blocks, one shown at a time (#389, a South | West switch and one line of figures), each the Dashboard's Size × Thickness section fixed to
+// that region (its own filters, its three views, FG age last), then the Tagged / Not tagged check.
+// The Dashboards › FM / MM / SM sub-tabs (ADR-0018; layout M2, owner 20-Nov-2026). Overview = the Status key
+// on top of the region's grid; Worklists = Make next and Stock stuck. The grid is drawn on Overview only.
+const FM_MM_SM_TABS = [['grid', 'Overview'], ['next', 'Worklists'], ['check', 'Production check'], ['list', 'SKU list']]
+
+function FmMmSmSubTab({ orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant,
+  planningRows, allProductions, allDispatches, inner = 'grid', onNavigate = () => {} }) {
+  const todayStr = today()
+  // What the open screen shows: Overview = Status key + grid; Worklists = the lists only; Production check and SKU list are the grid's views.
+  const showKey = inner === 'grid'
+  const showLists = inner === 'next'
+  const showGrid = ['grid', 'check', 'list'].includes(inner)
+  const gridView = inner === 'check' || inner === 'list' ? inner : 'grid'
+  // The tag feed: whole stores, every plant, as of today (fmMmSmFeed). The grids below get the
+  // plant-filtered stores, so their Closing stock, Dispatch, Pending and Production required follow the header.
+  const feed = useMemo(() => fmMmSmFeed({ productions: allProductions, dispatches: allDispatches, skus, plants, stored: planningRows, today: todayStr }),
+    [allProductions, allDispatches, skus, plants, planningRows, todayStr])
+  // Status key (#379): the cell picked per region ({ South: key | null, West: … }). It narrows that region's grid and
+  // lists on every screen until cleared (the chip on the block).
+  const [statusPick, setStatusPick] = useState({})
+  // #389: one region block at a time — or All (owner, 20-Nov-2026): every region, one under the other, each its own
+  // Status key, grid and figures. A tag is regional, so the regions are shown apart and never added up.
+  // Every block stays mounted (an unshown one is `hidden`) so a region keeps its own filters, dates and chip.
+  const [shown, setShown] = useState('South')
+  const all = shown === FM_MM_SM_ALL_REGIONS
+  const isShown = (region) => all || region === shown
+  const pickStatus = (region, key) => {
+    setShown(s => s === FM_MM_SM_ALL_REGIONS ? s : region)
+    setStatusPick(p => ({ ...p, [region]: p[region] === key ? null : key }))
+  }
+  return (
+    <div className="space-y-6">
+      <FmMmSmRegionLine feed={feed} plants={plants} shown={shown} onShow={setShown} />
+      {(inner === 'check' || inner === 'list') && <p className="text-sm text-slate-500 dark:text-slate-400">{all ? 'Each region' : 'The region shown'}, as <strong>{inner === 'check' ? 'Production check' : 'SKU list'}</strong> — the same figures as Sales › {inner === 'check' ? 'Production check' : 'SKU list'} with Region on that region. Tag and cover show on Overview.</p>}
+      {feed.map(b => (
+        <React.Fragment key={b.region}>
+          {all && <FmMmSmRegionFigures block={b} plants={plants} />}
+          {showKey && isShown(b.region) && <FmMmSmStatusMatrix block={b} picked={statusPick[b.region] || null} onPick={k => pickStatus(b.region, k)} />}
+          {(showLists || showGrid) && <FmMmSmRegionBlock block={b} hidden={!isShown(b.region)} orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils}
+          skus={skus} plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant} month={todayStr.slice(0, 7)}
+          view={gridView} showGrid={showGrid} onFound={() => onNavigate('fm', 'grid')}
+          status={statusPick[b.region] || null} onClearStatus={() => pickStatus(b.region, null)}
+          worklists={showLists} />}
+        </React.Fragment>
+      ))}
+    </div>
+  )
+}
+
+// The Status key as one matrix for the region shown (owner's pick, 20-Nov-2026): rows FM, MM, SM, No sales;
+// columns the five FG days of cover brackets, then No use and No sales. Each SKU sits in exactly one cell
+// (`fmMmSmStatusBoxes`), so rows and columns add up to the region line's SKUs. Cell = SKUs · Current inventory.
+function FmMmSmStatusMatrix({ block, picked, onPick }) {
+  const { region, rows } = block
+  const { groups, total } = fmMmSmStatusBoxes(rows)
+  const tagGroups = groups.filter(g => g.tag !== 'No sales')
+  const noSales = groups.find(g => g.tag === 'No sales')
+  const cols = [...tagGroups[0].boxes.map((b, i) => ({ word: b.word, bracket: b.bracket, at: g => g.tag === 'No sales' ? null : g.boxes[i] })),
+    ...noSales.boxes.map((b, i) => ({ word: b.word, bracket: null, at: g => g.tag === 'No sales' ? g.boxes[i] : null }))]
+  const colTotal = (c) => groups.map(c.at).filter(Boolean).reduce((t, b) => ({ count: t.count + b.count, inventory: t.inventory + b.inventory }), { count: 0, inventory: 0 })
+  const fig = (x) => <><span className="font-semibold text-slate-900 dark:text-white">{x.count}</span><span className="text-slate-500 dark:text-slate-400"> · {fmtTonnes(x.inventory)} T</span></>
+  const th = 'px-3 py-1.5 font-semibold whitespace-nowrap'
+  return (
+    <section aria-label={`Status key · ${region}`} className="space-y-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4">
+        <h3 className="text-base font-semibold text-slate-900 dark:text-white">Status key · {region}</h3>
+        <span className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">SKUs · Current inventory, as of today. Click a cell to narrow the grid below.<FmMmSmKeyMenu /></span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm tabular-nums border-y border-slate-200 dark:border-slate-700" aria-label={`Status key · ${region}`}>
+          <thead>
+            <tr className="text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
+              <th className={`${th} text-left`}>{FM_MM_SM_NAME}</th>
+              {cols.map(c => (
+                <th key={c.word} className={`${th} text-right`}>
+                  {c.bracket == null ? c.word : <span className={`inline-flex items-center gap-1 rounded-full px-2 py-px text-xs ${COVER_PILL[c.bracket]}`}>
+                    {c.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}{c.word}</span>}
+                </th>
+              ))}
+              <th className={`${th} text-right border-l border-slate-200 dark:border-slate-700`}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map(g => (
+              <tr key={g.tag} className="border-t border-slate-100 dark:border-slate-800">
+                <td className="px-3 py-1 whitespace-nowrap"><span className={`inline-block rounded px-1.5 py-px text-xs leading-tight ${MOVES_CHIP[g.tag] || ''}`}>{g.tag}</span></td>
+                {cols.map(c => {
+                  const b = c.at(g)
+                  if (!b) return <td key={c.word} className="px-3 py-1 text-right text-slate-300 dark:text-slate-600">–</td>
+                  const on = picked === b.key
+                  return (
+                    <td key={c.word} className="px-1 py-0.5 text-right">
+                      <button type="button" aria-pressed={on} disabled={!b.count && !on} onClick={() => onPick(b.key)}
+                        aria-label={`${region} · ${fmMmSmStatusLabel(b.key)}`}
+                        title={`${fmMmSmStatusLabel(b.key)} (${b.limit}): ${fmMmSmSkuCount(b.count)}, Current inventory ${fmtTonnes(b.inventory)} T${b.bracket == null ? '' : `, Blended monthly rate ${fmtTonnes(b.rate)} T a month`}`}
+                        className={`w-full text-right rounded px-2 py-0.5 whitespace-nowrap ${DASH_RING} ${on ? 'bg-indigo-600 [&_span]:!text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800'} disabled:opacity-30 disabled:cursor-default`}>
+                        {fig(b)}
+                      </button>
+                    </td>
+                  )
+                })}
+                <td className="px-3 py-1 text-right whitespace-nowrap border-l border-slate-200 dark:border-slate-700">{fig(g)}</td>
+              </tr>
+            ))}
+            <tr className="border-t border-slate-300 dark:border-slate-600 font-semibold">
+              <td className="px-3 py-1">Total</td>
+              {cols.map(c => <td key={c.word} className="px-3 py-1 text-right whitespace-nowrap">{fig(colTotal(c))}</td>)}
+              <td className="px-3 py-1 text-right whitespace-nowrap border-l border-slate-200 dark:border-slate-700">{fig(total)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+// The key: the five bracket words with their day limits per FM / MM / SM (`fmMmSmBracketLimits`, whole days, the
+// same words the Status key prints), because a narrow cell prints only the days and the tag.
+// The key behind a button, beside the heading of the screen that prints days of cover (Overview, Worklists).
+const FmMmSmKeyMenu = () => <PopMenu label="Key: days of cover" className="right-0 w-max max-w-[40rem] p-3"><FmMmSmKey /></PopMenu>
+function FmMmSmKey() {
+  return (
+    <div className="text-xs text-slate-600 dark:text-slate-300">
+      <p className="mb-1"><strong>Key</strong> — a cell prints whole days of FG days of cover and the tag (e.g. <span className="tabular-nums">7 d FM</span>); hover it for the bracket. Days by bracket:</p>
+      <div className="overflow-x-auto">
+        <table className="text-xs" aria-label="Key: FG days of cover brackets">
+          <thead>
+            <tr>
+              <th className="px-2 py-0.5 text-left font-semibold" />
+              {PLANNING_COVER_WORDS.map((w, i) => (
+                <th key={w} className="px-2 py-0.5 text-left font-semibold">
+                  <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-px leading-tight ${COVER_PILL[i]}`}>
+                    {i === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}{w}
+                  </span>
+                </th>
+              ))}
+              <th className="px-2 py-0.5 text-left font-semibold"><span className="text-slate-400 dark:text-slate-500">No use</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.keys(PLANNING_COVER_BRACKETS).map(tag => (
+              <tr key={tag}>
+                <th className="px-2 py-0.5 text-left font-semibold"><span className={`inline-block rounded px-1.5 py-px leading-tight ${MOVES_CHIP[tag]}`}>{tag}</span></th>
+                {fmMmSmBracketLimits(tag).map(l => <td key={l} className="px-2 py-0.5 tabular-nums">{l}</td>)}
+                {tag === 'FM' && <td rowSpan={3} className="px-2 py-0.5 align-top text-slate-500 dark:text-slate-400">stock, no sales</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+const fmMmSmSkuCount = (n) => `${n} SKU${n === 1 ? '' : 's'}`
+
+// One region block: the Dashboard's grid fixed to the region (its figures are on the region line above).
+function FmMmSmRegionBlock({ block, hidden = false, orders, dispatches, productions, coils, babyCoils, skus, plants, stateRegions, distributors, selectedPlant, month,
+  status = null, onClearStatus = null, worklists = false, view = 'grid', showGrid = true, onFound = null }) {
+  const { region, rows } = block
+  // A Status key box picked for this region (#379): the grid keeps its SKUs' cells and tags them (`fmMmSmStatusTagRows`).
+  const statusRows = useMemo(() => status ? fmMmSmStatusCut(rows, status) : null, [rows, status])
+  const gridTagRows = useMemo(() => fmMmSmStatusTagRows(rows, status), [rows, status])
+  const servingIds = plantsServingRegion(region, plantMaster(plants))
+  return (
+    <section role="region" aria-label={`${region} block`} hidden={hidden} className="space-y-4">
+      {selectedPlant !== ALL_PLANTS && !servingIds.has(selectedPlant) && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          <strong>{plantLabel(selectedPlant)} does not serve {region}</strong>, so this block’s Closing stock, Dispatch, Pending to Dispatch and
+          Production required read empty under the header’s plant. The figures on the region line and every tag are {region}-wide and stay as they are.
+        </p>
+      )}
+      {statusRows && (
+        <p className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+          <span>Status key:</span>
+          <button type="button" onClick={onClearStatus} aria-label={`Clear the ${region} status filter`}
+            className="inline-flex items-center gap-1 rounded-full border border-indigo-500 bg-indigo-50 dark:bg-indigo-900/40 px-2 py-0.5 font-medium">
+            {fmMmSmStatusLabel(status)} · {fmMmSmSkuCount(statusRows.length)} <span aria-hidden="true">✕</span>
+          </button>
+          <span className="text-slate-400 dark:text-slate-500">{showGrid ? `the ${region} grid shows only these SKUs’ cells` : 'the lists show only these SKUs'}; the region line stays {region}-wide.</span>
+        </p>
+      )}
+      <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus} plants={plants}
+        stateRegions={stateRegions} distributors={distributors} distributor="" month={month} selectedPlant={selectedPlant}
+        region={region} tagRows={gridTagRows} hideExport statusRows={statusRows} worklists={worklists} view={view} showGrid={showGrid} onFound={onFound} />
+    </section>
+  )
+}
+
+// #389: the region switch and, on one line, what the three cards showed — the region's plants, SKUs (FM, MM, SM, No sales),
+// Blended monthly rate and Current inventory, region-wide and as of today (`fmMmSmFeed`'s `cards`).
+const FM_MM_SM_ALL_REGIONS = 'All'
+function FmMmSmRegionLine({ feed, plants, shown, onShow }) {
+  const options = [...feed.map(x => [x.region, x.region]), [FM_MM_SM_ALL_REGIONS, FM_MM_SM_ALL_REGIONS]]
+  if (shown === FM_MM_SM_ALL_REGIONS) return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-700 dark:text-slate-200">
+      <Segmented label="Region" options={options} value={shown} onChange={onShow} />
+      <span className="text-xs text-slate-500 dark:text-slate-400">Every region, one under the other. A SKU’s tag is regional, so the regions are never added up.</span>
+    </div>
+  )
+  const b = feed.find(x => x.region === shown) || feed[0]
+  return (
+    <div data-testid="fm-mm-sm-region-line" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-700 dark:text-slate-200">
+      <Segmented label="Region" options={options} value={b.region} onChange={onShow} />
+      <FmMmSmRegionFigures block={b} plants={plants} inline />
+    </div>
+  )
+}
+// One region's figures: its plants and what the three cards showed (`fmMmSmFeed`'s `cards`), region-wide, as of today.
+// `inline`: on the switch's line (one region shown); otherwise its own line heading that region's section under All.
+function FmMmSmRegionFigures({ block: b, plants, inline = false }) {
+  const serving = [...plantsServingRegion(b.region, plantMaster(plants))].map(id => plantLabel(id))
+  const { cards } = b
+  const body = <>
+    {!inline && <strong className="text-base font-semibold text-slate-900 dark:text-white">{b.region}</strong>}
+    <span className="text-xs text-slate-500 dark:text-slate-400">stock at {serving.length ? serving.join(' + ') : `no plant — none serves ${b.region}`}</span>
+    <span className="text-xs text-slate-500 dark:text-slate-400">{b.region}-wide, as of today</span>
+    <span>SKUs <strong className="tabular-nums">{cards.skus}</strong>
+      <span className="text-xs text-slate-500 dark:text-slate-400"> ({['FM', 'MM', 'SM', 'No sales'].map(t => `${t} ${cards.counts[t]}`).join(' · ')})</span></span>
+    <span>Blended monthly rate <strong className="tabular-nums">{fmtTonnes(cards.rate)} T a month</strong></span>
+    <span>Current inventory <strong className="tabular-nums">{fmtTonnes(cards.inventory)} T</strong></span>
+  </>
+  return inline
+    ? body
+    : <div data-testid={`fm-mm-sm-region-line-${b.region}`} className="flex flex-wrap items-baseline gap-x-4 gap-y-1 pt-4 border-t-2 border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200">{body}</div>
+}
+
+// #390: the long explanation, folded; every rule stays one click away.
+function FmMmSmWorkedOut({ children }) {
+  return (
+    <details className="text-xs text-slate-500 dark:text-slate-400">
+      <summary className={HELP_SUMMARY}>How this is worked out</summary>
+      <p className="mt-1">{children}</p>
+    </details>
+  )
+}
+
+function SalesDashboard({ orders, dispatches, skus, productions = [], coils = [], babyCoils = [], estimates = [], setEstimates = null, stateRegions = [], setStateRegions = null, plants = [], distributors = [], selectedPlant = ALL_PLANTS, canWiden = true,
+  view = 'month', onNavigate = () => {} }) {
+  // `view` is the Dashboards › Sales sub-tab (ADR-0018); each section renders only on its own.
+  const sizeView = ['grid', 'check', 'list'].includes(view) ? view : null
   const skuDesc = useCallback((code) => skus.find(s => s.skuCode === code)?.description || code, [skus])
 
   // ── Best Estimate under a plant filter (ticket #121) ──────────────────────────────────────────
@@ -5008,7 +5936,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
     // that sharing visible: stock below it means the size is oversubscribed even where this
     // distributor alone looks covered. A null (an `Unmapped` distributor — no known service area)
     // renders as an em dash, never as 0. ──
-    { label: 'Free Inventory (T)', value: r => r.freeStock ?? 0,
+    { label: 'Free in area (T)', value: r => r.freeStock ?? 0,
       render: r => r.freeStock == null
         ? <span className="text-slate-400" title={`No region mapped for this distributor's state, so we cannot tell which plants serve it. Map the state in the Region column above.`}>—</span>
         : <span title={`Stock at ${areaLabel(selectedRegion)}, less the Confirmed orders of every distributor in that area — not reserved for this one. On-hand ${fmtT(r.onhand ?? 0)} T − Confirmed ${fmtT(r.allConfirmed ?? 0)} T`}>{redIfNeg(r.freeStock)}</span>,
@@ -5045,13 +5973,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
     { label: 'Total Orders (T)', value: r => r.totalOrders, render: r => fmtT(r.totalOrders), total: v => fmtT(v) },
   ]
 
-  const inputCls = 'px-2 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Sales Dashboard</h2>
-        <Btn size="sm" variant="ghost" onClick={() => downloadCSV(`distributor-sales-${todayStr}.csv`,
+  const downloadSalesCSV = () => downloadCSV(`distributor-sales-${todayStr}.csv`,
           ['Distributor', 'State', 'All States', 'Region', 'Best Estimate (T)', '% of BE', 'Gap to BE (T)', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'Invoiced MTD (T)', 'Total Orders (T)'],
           // "All States" is only populated for a multi-state distributor — it is what makes the
           // resolved single State auditable rather than something to take on trust.
@@ -5061,37 +5983,64 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
             r.bestEstimate == null ? '' : fmtT(r.bestEstimate),
             plantScoped || r.pctOfBe == null ? '' : `${Math.round(r.pctOfBe)}%`,
             plantScoped || r.gapToBe == null ? '' : fmtT(r.gapToBe),
-            fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))}>⬇ Sales CSV</Btn>
-      </div>
-      <p className="text-xs text-slate-400 -mt-3">
+            fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders)]))
+  const downloadSkuBreakdownCSV = () => downloadCSV(
+              `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
+              ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'Invoiced MTD (T)', 'Total Orders (T)',
+                'Free Inventory (T)', 'All Distr. Pending (T)', 'Short by (T)'],
+              skuBreakdownExportRef.current.map(r => [r.skuCode, r.description || skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders),
+                r.freeStock == null ? '' : fmtT(r.freeStock), r.allPending == null ? '' : fmtT(r.allPending), r.shortBy == null ? '' : fmtT(r.shortBy)]))
+  const sizeExportRef = useRef([])
+
+  const inputCls = 'px-2 h-8 rounded-md border border-slate-300 dark:border-slate-600 text-sm bg-white dark:bg-slate-800 dark:text-slate-100'
+
+  return (
+    <div className="space-y-6">
+      {/* The Sales dashboard's own controls, above every screen they move (ADR-0018). Month scopes Invoiced
+          MTD and Total Orders and is where the size grid's dates start; Distributor filters the distributor
+          table and the size grid. Month-wise lists every month and distributor, so it has neither. */}
+      <DashControls scope={plantScoped ? plantLabel(selectedPlant) : 'All plants'} asOf={fmtIso(todayStr)} exports={() => [
+        { label: 'Sales CSV', run: downloadSalesCSV, note: 'Every distributor, the month picked' },
+        ...(view === 'dist' && selected ? [{ label: `SKU breakdown CSV — ${distributorCode(selected.customer)}`, run: downloadSkuBreakdownCSV, disabled: !selected.skuRows.length, note: 'As filtered on screen' }] : []),
+        ...(sizeView ? sizeExportRef.current : []),
+      ]}>
+        {view === 'monthwise' ? null : (
+          <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600 dark:text-slate-300">
+            <label className="flex items-center gap-2">Month
+              <select value={month} onChange={e => setMonth(e.target.value)} className={inputCls} title="Scopes Invoiced MTD, Total Orders and the size grid's starting dates">
+                {monthOptions.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
+              </select>
+            </label>
+            {view !== 'month' && (
+              <label className="flex items-center gap-2">Distributor
+                <select value={distributor} onChange={e => setDistributor(e.target.value)} className={inputCls}>
+                  <option value="">All Distributors</option>
+                  {distOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+        )}
+      </DashControls>
+      {view === 'month' && <>
+      <p className="text-xs text-slate-400">
         <strong>Confirmed</strong> = Release − Invoiced (orders confirmed, pending dispatch), <em>less any tonnage already
         invoiced against the line</em> — the ERP's own invoiced figure does not fill until an order reaches Delivered, so
         without that the same steel is counted as both shipped and still owed; <strong>Non-confirmed</strong> = Ordered − Release − Cancelled;
         both are the carried-forward order-book snapshot. <strong>Invoiced MTD</strong> = invoiced tonnage in the selected month (<strong>{monthLabel(month)}</strong>);
-        <strong> Pending to Dispatch</strong> = Confirmed + Non-confirmed; <strong>Total Orders</strong> = Invoiced MTD + Confirmed + Non-confirmed. All weights in MT.
+        <strong> Pending to Dispatch</strong> = Confirmed + Non-confirmed; <strong>Total Orders</strong> = Invoiced MTD + Confirmed + Non-confirmed. All weights in T.
       </p>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card title="Total Orders" value={`${fmtT(kpis.totalOrders)} T`} sub="Invoiced + Confirmed + Non-conf." color="indigo" />
-        <Card title="Pending to Dispatch" value={`${fmtT(kpis.pending)} T`} color="amber"
-          parts={[
-            { label: 'Confirmed', value: `${fmtT(kpis.confirmed)} T`, color: 'emerald' },
-            { label: 'Non-confirmed', value: `${fmtT(kpis.nonConfirmed)} T`, color: 'cyan' },
-          ]} />
-        <Card title="Invoiced MTD" value={`${fmtT(kpis.mtdInvoice)} T`} sub={`Invoiced · ${monthLabel(month)}`} color="emerald" />
-      </div>
+      <KpiStrip label={`Sales — ${monthLabel(month)}`} items={[
+        { label: 'Total Orders', value: fmtT(kpis.totalOrders), unit: 'T', sub: 'Invoiced + Confirmed + Non-conf.' },
+        { label: 'Pending to Dispatch', value: fmtT(kpis.pending), unit: 'T', sub: `Confirmed ${fmtT(kpis.confirmed)} · Non-confirmed ${fmtT(kpis.nonConfirmed)}`,
+          onClick: () => onNavigate('sales', 'dist'), go: 'Sales › Distributor' },
+        { label: 'Invoiced MTD', value: fmtT(kpis.mtdInvoice), unit: 'T', sub: `Invoiced · ${monthLabel(month)}` },
+      ]} />
+      </>}
 
-      <Section title="Distributor-wise Sales" actions={
-        <div className="flex items-center gap-2 flex-wrap">
-          <select value={distributor} onChange={e => setDistributor(e.target.value)} className={inputCls}>
-            <option value="">All Distributors</option>
-            {distOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
-          </select>
-          <select value={month} onChange={e => setMonth(e.target.value)} className={inputCls} title="Scopes the Invoiced MTD / Total Orders figures">
-            {monthOptions.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
-          </select>
-        </div>
-      }>
+      {view === 'dist' && <>
+      <DashBlock title="Distributor-wise Sales">
         {rows.length ? (
           <>
             <DataTable columns={salesCols} data={rows} excel maxHeight="60vh" totalsLabel="TOTAL"
@@ -5129,18 +6078,12 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
               {' '}Estimates do not carry over: each month starts blank.
             </p>
           </>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No order / invoice data yet</p>}
-      </Section>
+        ) : <p className={DASH_EMPTY}>No order / invoice data yet</p>}
+      </DashBlock>
 
       {selected && (
-        <Section title={`SKU Breakdown — ${distributorCode(selected.customer)}`} actions={
+        <DashBlock title={`SKU Breakdown — ${distributorCode(selected.customer)}`} actions={
           <div className="flex items-center gap-2">
-            <Btn size="sm" variant="ghost" disabled={!selected.skuRows.length} onClick={() => downloadCSV(
-              `sku-breakdown-${(selected.customer || 'distributor').replace(/[^\w-]+/g, '_')}-${todayStr}.csv`,
-              ['SKU', 'Description', 'Confirmed (T)', 'Non-confirmed (T)', 'Pending to Dispatch (T)', 'Invoiced MTD (T)', 'Total Orders (T)',
-                'Free Inventory (T)', 'All Distr. Pending (T)', 'Short by (T)'],
-              skuBreakdownExportRef.current.map(r => [r.skuCode, r.description || skuDesc(r.skuCode), fmtT(r.confirmed), fmtT(r.nonConfirmed), fmtT(r.pending), fmtT(r.mtdInvoice), fmtT(r.totalOrders),
-                r.freeStock == null ? '' : fmtT(r.freeStock), r.allPending == null ? '' : fmtT(r.allPending), r.shortBy == null ? '' : fmtT(r.shortBy)]))}>⬇ SKU CSV</Btn>
             <Btn size="sm" variant="ghost" onClick={() => setSelectedCustomer(null)}>× Close</Btn>
           </div>
         }>
@@ -5152,7 +6095,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
                   covered by the same tonnage. The empty-area sentence below is not decoration —
                   without it a screen of dashes reads like a loading bug. */}
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                <strong>Free Inventory</strong> = the stock of the plants that <strong>serve {selectedRegion}</strong>
+                <strong>Free in area</strong> = the stock of the plants that <strong>serve {selectedRegion}</strong>
                 {areaPlants(selectedRegion).length ? ` (${areaPlants(selectedRegion).join(' + ')})` : ''} for this SKU (produced − invoiced) less the
                 {' '}<strong>Confirmed</strong> tonnage of <strong>every</strong> distributor in that same area — what is promised to
                 nobody yet. It is <strong>not reserved</strong> for {distributorCode(selected.customer)}, and goes
@@ -5163,7 +6106,7 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
               </p>
               {selectedRegion !== UNMAPPED_REGION && areaPlants(selectedRegion).length === 0 && (
                 <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
-                  <strong>No plant serves {selectedRegion} yet</strong>, so every Free Inventory reads 0 and every
+                  <strong>No plant serves {selectedRegion} yet</strong>, so every Free in area reads 0 and every
                   {' '}<strong>Short by</strong> is this distributor’s full pending. Those dashes are the real position, not a
                   loading error — they fill in by themselves the day a plant that serves {selectedRegion} produces.
                 </p>
@@ -5176,14 +6119,16 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
                 </p>
               )}
             </>
-          ) : <p className="text-sm text-slate-400 py-8 text-center">No SKU rows for this distributor</p>}
-        </Section>
+          ) : <p className={DASH_EMPTY}>No SKU rows for this distributor</p>}
+        </DashBlock>
       )}
 
-      <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus} plants={plants}
-        stateRegions={stateRegions} distributors={distributors} distributor={distributor} month={month} selectedPlant={selectedPlant} />
+      </>}
 
-      <Section title="Month-wise Sales">
+      {sizeView && <SalesSizeGrid orders={orders} dispatches={dispatches} productions={productions} coils={coils} babyCoils={babyCoils} skus={skus} plants={plants}
+        stateRegions={stateRegions} distributors={distributors} distributor={distributor} month={month} selectedPlant={selectedPlant} view={sizeView} exportRef={sizeExportRef} />}
+
+      {view === 'monthwise' && <DashBlock title="Month-wise Sales">
         {monthRows.length ? (
           <>
             <p className="mb-3 text-xs text-slate-400">
@@ -5191,8 +6136,8 @@ function SalesDashboard({ orders, dispatches, skus, productions = [], coils = []
             </p>
             <DataTable columns={monthCols} data={monthRows} excel maxHeight="60vh" totalsLabel="TOTAL" />
           </>
-        ) : <p className="text-sm text-slate-400 py-8 text-center">No order / invoice data yet</p>}
-      </Section>
+        ) : <p className={DASH_EMPTY}>No order / invoice data yet</p>}
+      </DashBlock>}
     </div>
   )
 }
@@ -5677,7 +6622,7 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
   const canEdit = !!setStored
   const shown = planningMasterShown(region, { filter, q })
   const retiredView = shown.filter === 'retired'
-  const cols = 7 + region.plants.length
+  const cols = 9 + region.plants.length
   const shownIds = new Set(shown.groups.flatMap(g => g.rows.map(r => r.id)))
   const onLine = (id) => (msg && msg.at === id && shownIds.has(id) ? msg : null)
   const topMsg = msg && msg.at !== 'add' && !shownIds.has(msg.at) ? msg : null
@@ -5825,6 +6770,8 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Buffer (T)</th>
               <th colSpan={region.plants.length} scope="colgroup" className={`${thGroup} text-center`}>Can be made at</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Stock now (T)</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="FM / MM / SM (fast / medium / slow moving) within this region, by Blended monthly rate. No sales = under 0.05 MT a month">FM / MM / SM</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="FG days of cover (blended) = stock now ÷ (blended monthly rate ÷ 30)">FG days of cover</th>
               <th rowSpan={2} className={`${th} text-left align-bottom`}>Check</th>
               <th rowSpan={2} className={`${th} ${pinR} z-30 bg-slate-50 dark:bg-slate-700 align-bottom`}><span className="sr-only">Actions</span></th>
             </tr>
@@ -5887,6 +6834,8 @@ function ProductionPlanning({ productions, dispatches, skus, plants, orders, sto
                           </>
                         )}
                         <td className="px-2 py-1 whitespace-nowrap text-right tabular-nums" title={planningStockTitle(r.stock, region.plants) || undefined}>{planningStockLabel(r.stock)}</td>
+                        <PlanningMovesCell moves={r.moves} td="px-2 py-1 whitespace-nowrap" />
+                        <PlanningCoverCell cover={r.cover} td="px-2 py-1 whitespace-nowrap" />
                         <td className="px-2 py-1">
                           {/* A flag for the admin to tick or leave — text only, so clicking it changes nothing (#250). */}
                           {r.notes.map(n => (
@@ -6024,6 +6973,44 @@ function PlanningReasonDialog({ name, what, initial = '', onSave, onCancel }) {
         </div>
       </div>
     </div>
+  )
+}
+
+// The two small planning columns (#375): FM / MM / SM (or No sales) and FG days of cover (
+// blended). Both are the view's finished figures (`row.moves`, `row.cover` from planningMovesCover in
+// calc.js) — nothing is computed here. Tags carry no colour; only the cover pill does. A null figure
+// (a retired row, a size group) prints an empty cell.
+const MOVES_CHIP = {
+  FM: 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900',
+  MM: 'bg-slate-300 text-slate-800 dark:bg-slate-600 dark:text-slate-100',
+  SM: 'border border-slate-400 text-slate-700 dark:border-slate-500 dark:text-slate-300',
+  'No sales': 'border border-dashed border-slate-300 text-slate-400 dark:border-slate-600 dark:text-slate-500',
+}
+const COVER_PILL = [
+  'bg-[#dc2626] text-white',                                                                                          // Running out
+  'bg-[#ffedd5] text-[#9a3412] border border-[#fdba74] dark:bg-[#431407] dark:text-[#fdba74] dark:border-[#9a3412]',   // Thin
+  'text-slate-700 dark:text-slate-200',                                                                              // Healthy: no fill
+  'bg-[#f3e8ff] text-[#6b21a8] border border-[#d8b4fe] dark:bg-[#3b0764] dark:text-[#d8b4fe] dark:border-[#6b21a8]',   // Heavy
+  'bg-[#0f172a] text-white dark:bg-black dark:border dark:border-slate-400',                                         // Too much
+]
+function PlanningMovesCell({ moves, td }) {
+  return (
+    <td className={`${td} text-left`} title={moves?.title || undefined}>
+      {moves && <span data-moves={moves.tag} className={`inline-block rounded px-1.5 py-px text-xs leading-tight ${MOVES_CHIP[moves.tag]}`}>{moves.label}</span>}
+    </td>
+  )
+}
+function PlanningCoverCell({ cover, td }) {
+  return (
+    <td className={`${td} text-left tabular-nums`} title={cover?.title || undefined}>
+      {cover?.kind === 'days' && (
+        <span data-cover={cover.word} className={`inline-flex items-center gap-1 rounded-full px-1.5 py-px text-xs leading-tight ${COVER_PILL[cover.bracket]}`}>
+          {cover.bracket === 2 && <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
+          {cover.label}
+        </span>
+      )}
+      {cover?.kind === 'noUse' && <span data-cover="No use" className="text-xs text-slate-400 dark:text-slate-500">No use</span>}
+    </td>
   )
 }
 
@@ -6212,8 +7199,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
   const rc = coilView.regions[region.region] || { rows: {}, groups: {}, total: null }
   // The Coil tab's headings: the whole region for the count, the search and chip for the lines shown.
   const coilTab = planningCampaignCoilTab(rc, region, { ids: new Set(shown.rows.map(r => r.id)) })
-  // Size · Thickness · Buffer · Stock (4) · Sold (T) · This month (T) (4) · (Baseline) · Plant · Coil (T) (4)
-  const cols = 4 + SOLD_COLS + 4 + (fin.finalised ? 1 : 0) + 1 + 4
+  // Size · Thickness · Buffer · Stock (4) · FM / MM / SM · FG days of cover · Sold (T) · This month (T) (4) · (Baseline) · Plant · Coil (T) (4)
+  const cols = 4 + 2 + SOLD_COLS + 4 + (fin.finalised ? 1 : 0) + 1 + 4
   const toggle = (key) => setCollapsed(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next })
   // Column-name headers wrap (the plain names are kept, #333) so the 18 columns fit at 1366 px (#336);
   // the thin grouped-heading row stays on one line.
@@ -6364,6 +7351,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
               <th rowSpan={2} className={`${th} text-right align-bottom`}>Thickness (mm)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title="Buffer, T — or Made to order">Buffer (T)</th>
               <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Finished stock on hand on ${m.openLabel}, T, the region's plants — not netted against orders`}>Stock on {m.openLabel}</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title="FM / MM / SM (fast / medium / slow moving), ranked within this region by Blended monthly rate (10 % last month + 30 % last 3 + 30 % last 6 + 30 % last 12 months). No sales = under 0.05 MT a month">FM / MM / SM</th>
+              <th rowSpan={2} className={`${th} text-left align-bottom`} title={`FG days of cover (blended) = stock now ÷ (blended monthly rate ÷ 30). Uses stock NOW (today), not Stock on ${m.openLabel}`}>FG days of cover</th>
               <th colSpan={SOLD_COLS} scope="colgroup" className={`${thGroup} h-6 text-center border-l border-slate-200 dark:border-slate-600`}>Sold (T)</th>
               <th colSpan={4} scope="colgroup" className={`${thGroup} h-6 text-center ${typedRule}`}>This month (T)</th>
               {fin.finalised && <th rowSpan={2} className={`${th} text-right align-bottom`} title={`Planned when ${region.region} was finalised — kept unchanged`}>Baseline</th>}
@@ -6408,6 +7397,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
                       <td className={td} />
                       <td className={td} />
                       <td className={num}>{planningCell(g.open)}</td>
+                      <td className={td} />
+                      <td className={td} />
                       <td className={num}>{planningCell(g.last)}</td>
                       <td className={num}>{planningCell(g.three)}</td>
                       <td className={num}>{planningCell(g.l30)}</td>
@@ -6442,6 +7433,8 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
                           {r.type === 'Buffer' ? (r.buffer != null ? r.buffer : '–') : 'Made to order'}
                         </td>
                         <td className={num} title={r.titles.open}>{planningCell(r.open.total)}</td>
+                        <PlanningMovesCell moves={r.moves} td={td} />
+                        <PlanningCoverCell cover={r.cover} td={td} />
                         <td className={num} title={r.titles.last}>{planningCell(r.last.total)}</td>
                         <td className={num} title={r.titles.three}>{planningCell(r.three.total)}</td>
                         <td className={num} title={r.titles.l30}>{planningCell(r.l30.total)}</td>
@@ -6500,9 +7493,11 @@ function PlanningCampaign({ productions, dispatches, skus, plants, stored, coils
               <td className={sizeCell}>{region.region} total</td>
               <td className={td} />
               <td className={td} />
-              {['open', ...PLANNING_SOLD_FIELDS].map(f => (
-                <td key={f} className={num} title={region.sheetTotal.titles[f]}>{planningCell(region.sheetTotal[f].total)}</td>
-              ))}
+              {['open', ...PLANNING_SOLD_FIELDS].map(f => [
+                <td key={f} className={num} title={region.sheetTotal.titles[f]}>{planningCell(region.sheetTotal[f].total)}</td>,
+                f === 'open' && <td key="moves" className={td} />,
+                f === 'open' && <td key="cover" className={td} />,
+              ])}
               <td className={`${td} ${typedRule}`} />
               <td className={num}>{planningCell(region.sheetTotal.pending)}</td>
               <td className={`${num} ${region.sheetTotal.extra > 0 ? extraAdded : ''}`}>{planningExtraText(region.sheetTotal.extra)}</td>
@@ -7175,6 +8170,53 @@ function ProductionPlanningTab(props) {
   )
 }
 
+// ── Dashboards (ADR-0018): every dashboard in one tab, two layers only — a dashboard, then its
+// screens. Nothing here computes a figure; it picks what the existing components show. ──
+const DASHBOARDS = [
+  { key: 'inventory', label: 'Inventory', screens: [['overview', 'Overview'], ['movement', 'Stock movement'], ['tracker', 'Plant-wise Tracker'], ['activity', 'Activity']] },
+  { key: 'drill', label: 'Plant drill', screens: DRILL_TABS.map(t => [t.key, t.label]) },
+  { key: 'coil', label: 'Coil Tracker', screens: COIL_TRACKER_VIEWS },
+  { key: 'sales', label: 'Sales', screens: [['month', 'This month'], ['dist', 'Distributor'], ['grid', 'Size × Thickness'],
+    ['check', 'Production check'], ['list', 'SKU list'], ['monthwise', 'Month-wise'], ['dispatch', 'Dispatch']] },
+  { key: 'fm', label: FM_MM_SM_NAME, screens: FM_MM_SM_TABS, admin: true },
+]
+function Dashboards({ showFm, children }) {
+  // Dense console (look C, owner 20-Nov-2026): the two tab rows pin under the app header, each dashboard's
+  // control row under them. Heights are measured, so a header that wraps on a narrow screen still fits.
+  const navRef = useRef(null)
+  const [tops, setTops] = useState([0, 0])
+  useLayoutEffect(() => {
+    const measure = () => { const h = document.querySelector('header')?.offsetHeight || 0; setTops([h, h + (navRef.current?.offsetHeight || 0)]) }
+    measure(); window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [])
+  const boards = DASHBOARDS.filter(b => !b.admin || showFm)
+  // The open dashboard and each one's last screen: a UI preference kept on this device (`jsw:dashScreen`),
+  // never data. Anything unreadable — an older value, a dashboard this login does not get — opens the first.
+  const [pick, setPick] = useState(() => { const v = LS.get('jsw:dashScreen'); return v && typeof v === 'object' ? v : {} })
+  const board = boards.find(b => b.key === pick.board) || boards[0]
+  const screenOf = (key) => {
+    const v = pick.screens?.[key]
+    const { screens } = DASHBOARDS.find(b => b.key === key)
+    return screens.some(([k]) => k === v) ? v : screens[0][0]
+  }
+  const go = (key, screen) => {
+    const next = { board: key, screens: { ...pick.screens, ...(screen ? { [key]: screen } : {}) } }
+    setPick(next)
+    try { LS.set('jsw:dashScreen', next) } catch { /* storage blocked: the tab still switches */ }
+  }
+  const screen = screenOf(board.key)
+  return (
+    <div className="space-y-4" style={{ '--dash-top2': `${tops[1]}px` }}>
+      <div ref={navRef} className="sticky z-40 space-y-4 bg-slate-50 dark:bg-slate-900 pt-2 pb-3" style={{ top: tops[0] }}>
+        <ScreenTabs label="Dashboard" tabs={boards.map(b => [b.key, b.label])} value={board.key} onChange={k => go(k)} />
+        <Segmented role="tablist" label={`${board.label} screens`} options={board.screens} value={screen} onChange={k => go(board.key, k)} />
+      </div>
+      {children({ board: board.key, screen, screenOf, go })}
+    </div>
+  )
+}
+
 function InventoryApp({ session, onLogout }) {
   const [dark, setDark] = useState(() => LS.get('jsw:dark') ?? false)
   // ── Who signed in decides what renders (ticket #126) ──
@@ -7397,11 +8439,36 @@ function InventoryApp({ session, onLogout }) {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {tab === 'dashboard' && <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
-          trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
-          trackerPlant={trackerPlant} trackerPlants={plantMasterRows} selectedPlant={selectedPlant} />}
-        {tab === 'coilTracker' && <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} plants={plantMasterRows}
-          scopeLabel={selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant, plantMasterRows)} />}
+        {/* Dashboards (ADR-0018). Inventory and Plant drill are one <Dashboard> in the same place, so moving
+            between them keeps its plant, period and filters. FM / MM / SM's tag feed reads the WHOLE stores
+            (`planningRows`, `resolvedProductions`, `dispatches`), never the plant-filtered ones, because a tag
+            is a regional fact the header plant selector must not move. `estimates` and `stateRegions` stay
+            UNFILTERED for Sales — Best Estimate is keyed by distributor and Region by state; neither carries a
+            plant, and #117 puts a per-plant Best Estimate out of scope. */}
+        {tab === 'dashboard' && <Dashboards showFm={access.fmMmSmSubTab}>{({ board, screen, screenOf, go }) =>
+          board === 'inventory' || board === 'drill'
+            ? <Dashboard coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} skus={skus} babyCoils={plantBabyCoils} orders={plantOrders}
+                trackerCoils={trackerCoils} trackerBabyCoils={trackerBabyCoils} trackerProductions={trackerProductions} trackerDispatches={trackerDispatches}
+                trackerPlant={trackerPlant} trackerPlants={plantMasterRows} selectedPlant={selectedPlant}
+                screen={board === 'drill' ? 'drill' : screen} drillTab={screenOf('drill')} onNavigate={go} />
+            : board === 'coil'
+            ? <CoilTracker coils={plantCoils} productions={plantProductions} dispatches={plantDispatches} babyCoils={plantBabyCoils} plants={plantMasterRows}
+                scopeLabel={selectedPlant === ALL_PLANTS ? 'All plants' : plantLabel(selectedPlant, plantMasterRows)} view={screen} />
+            : board === 'sales' && screen === 'dispatch'
+            ? <DispatchOverview orders={plantOrders} dispatches={plantDispatches} productions={plantProductions} skus={skus}
+                compareOrders={trackerOrders} compareDispatches={trackerDispatches} comparePlant={trackerPlant}
+                stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />
+            : board === 'sales'
+            ? <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions} coils={plantCoils} babyCoils={plantBabyCoils}
+                estimates={distributorEstimates} setEstimates={setDistributorEstimates}
+                stateRegions={stateRegions} setStateRegions={setStateRegions}
+                plants={plants} distributors={distributors}
+                selectedPlant={selectedPlant} canWiden={access.plantSelector} view={screen} onNavigate={go} />
+            : <FmMmSmSubTab orders={plantOrders} dispatches={plantDispatches} productions={plantProductions} coils={plantCoils} babyCoils={plantBabyCoils} skus={skus}
+                plants={plants} stateRegions={stateRegions} distributors={distributors} selectedPlant={selectedPlant}
+                planningRows={planningRows} allProductions={resolvedProductions} allDispatches={dispatches} inner={screen}
+                onNavigate={go} />
+        }</Dashboards>}
         {tab === 'coilInward' && <CoilInward coils={coils} setCoils={setCoils} dispatches={dispatches} productions={resolvedProductions} babyCoils={babyCoils}
           operatingPlant={plantPinned ? selectedPlant : null} viewPlant={selectedPlant} />}
         {tab === 'slitting' && <Slitting coils={coils} babyCoils={babyCoils} setBabyCoils={setBabyCoils} productions={resolvedProductions} viewPlant={selectedPlant} />}
@@ -7414,10 +8481,7 @@ function InventoryApp({ session, onLogout }) {
         {tab === 'production' && <Production coils={coils} babyCoils={babyCoils} productions={resolvedProductions} setProductions={setProductions} dispatches={dispatches} skus={skus}
           operatingPlant={selectedPlant} viewPlant={selectedPlant} />}
         {tab === 'dispatch' && <Dispatch dispatches={plantDispatches} setDispatches={setDispatches} coils={plantCoils} skus={skus}
-          plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector}
-          orders={plantOrders} productions={plantProductions}
-          compareOrders={trackerOrders} compareDispatches={trackerDispatches} comparePlant={trackerPlant}
-          stateRegions={stateRegions} plants={plants} distributors={distributors} selectedPlant={selectedPlant} />}
+          plantScoped={selectedPlant !== ALL_PLANTS} canWiden={access.plantSelector} />}
         {tab === 'skuMaster' && <Masters skus={skus} setSkus={setSkus} productions={productions}
           orders={orders} dispatches={dispatches} stateRegions={stateRegions}
           plants={plants} setPlants={setPlants} distributors={distributors} setDistributors={setDistributors}
@@ -7431,15 +8495,6 @@ function InventoryApp({ session, onLogout }) {
             `orders`/`dispatches` are the scoped display data; replaceOrders/replaceDispatches (the
             uploads' write path) are untouched. */}
         {tab === 'orders' && <Orders orders={plantOrders} allOrders={orders} replaceOrders={replaceOrders} dispatches={plantDispatches} allDispatches={dispatches} replaceDispatches={replaceDispatches} productions={resolvedProductions} skus={skus} setSkus={setSkus} readOnly={isReadOnly('orders')} />}
-        {/* `estimates` and `stateRegions` stay UNFILTERED — Best Estimate is keyed by distributor
-            and Region by state; neither carries a plant, and #117 puts a per-plant Best Estimate
-            out of scope. `selectedPlant` goes in so the tab can withhold the BE comparisons that
-            would otherwise divide one plant's invoiced by the whole company's plan. */}
-        {tab === 'sales' && <SalesDashboard orders={plantOrders} dispatches={plantDispatches} skus={skus} productions={plantProductions} coils={plantCoils} babyCoils={plantBabyCoils}
-          estimates={distributorEstimates} setEstimates={setDistributorEstimates}
-          stateRegions={stateRegions} setStateRegions={setStateRegions}
-          plants={plants} distributors={distributors}
-          selectedPlant={selectedPlant} canWiden={access.plantSelector} />}
         {/* Reports follows the selector too (#121). `estimates`/`stateRegions` stay unfiltered for
             the same reason as Sales — neither carries a plant. A scoped workbook announces itself
             in its sheet titles and file name; see the Reports component.

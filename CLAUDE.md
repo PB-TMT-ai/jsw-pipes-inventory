@@ -118,3 +118,11 @@ This file wins over any gstack skill:
   worth keeping into the repo or onto its GitHub issue.
 - `/design-shotgun`'s AI-drawn variants need an image API key this environment does not have; its
   comparison board (`design compare --serve`) works without one.
+
+## taste-skill
+
+[taste-skill](https://github.com/Leonxlnx/taste-skill) adds `/design-taste-frontend`, a design skill
+built for marketing and company websites. Cloud sessions install it at start via
+`.claude/hooks/install-taste-skill.sh` (not vendored — it carries ~40 MB of photos). On a laptop:
+`npx skills add https://github.com/Leonxlnx/taste-skill --skill "design-taste-frontend"`.
+For this app's own screens, `docs/UI-PATTERNS.md` and the single-file `App.jsx` rule win over it.
