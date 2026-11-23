@@ -1,8 +1,8 @@
 {
  "file": "reports/Aged-FG-Push-Email-2026-11-23.html",
- "sha256": "1c74f260e86e7df7a10e0ec4d870031df2c66566fba851b475190a77a33dda80",
- "verdict": "FAIL",
+ "sha256": "c716945418a57c37137872fe64b82877035b6e0d64b95e5603dce7c9b2ec6358",
+ "verdict": "PASS",
  "by": "data-verifier",
- "summary": "NPMD action text lists RHS 80x40 x 2 as 71 MT over 60 days (actual 36.2; list sums 99 vs 64 headline); intro claim 'agree SKU by SKU within ~1 MT' false for Lepakshi 72x72x5 (+7.7), 122x61x2.5 (+8.1), 96x48x5 (+9.1)",
- "at": "2026-11-23T08:05:22+00:00"
+ "summary": "Rebuilt mail: both fixes correct (NPMD over-60 list 17+11+36=64.2; NPMD within ~3 MT, max 2.7; Lepakshi +7.7/+8.1/+9.1); only 3 lines changed vs checked version; all figures re-confirmed vs live DB",
+ "at": "2026-11-23T08:07:20+00:00"
 }
