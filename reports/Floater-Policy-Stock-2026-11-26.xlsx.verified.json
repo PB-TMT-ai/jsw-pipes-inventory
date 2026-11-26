@@ -1,0 +1,8 @@
+{
+ "file": "reports/Floater-Policy-Stock-2026-11-26.xlsx",
+ "sha256": "4050a10f668f544520755a440b33e0002f2b972761aed9b8ec96752c849dd3ef",
+ "verdict": "PASS",
+ "by": "data-verifier",
+ "summary": "All 8 stock cells match live DB within 0.0004 MT (rebuild 09:51:32 UTC); rates 60000/63000, value and total formulas correct; no row changes since build (max row versions coils 10598, baby 10585, productions 10596, dispatches 10578).",
+ "at": "2026-11-26T10:13:14+00:00"
+}
