@@ -950,6 +950,16 @@ describe('dispatchCoilTrace', () => {
     expect(dispatchCoilTrace('A', 1, prod, existing, null, undefined, 'lepakshi'))
       .toEqual([{ babyCoilId: 'L1-A', hrCoilId: 'L1', pieces: 1, weight: 1 }])
   })
+  it('breaks a same-date tie by entry time, then id — never by array order', () => {
+    const early = { id: 'p2', deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', createdAt: '2026-06-01T08:00:00Z', coilAllocations: [{ babyCoilId: 'E-A', hrCoilId: 'E', pieces: 2, weight: 2 }] }
+    const late = { id: 'p1', deleted: false, skuCode: 'A', dateOfProduction: '2026-06-01', createdAt: '2026-06-01T09:00:00Z', coilAllocations: [{ babyCoilId: 'L-A', hrCoilId: 'L', pieces: 2, weight: 2 }] }
+    const want = [{ babyCoilId: 'E-A', hrCoilId: 'E', pieces: 2, weight: 2 }]
+    expect(dispatchCoilTrace('A', 2, [early, late], [])).toEqual(want)
+    expect(dispatchCoilTrace('A', 2, [late, early], [])).toEqual(want)   // was L-A: input order won
+    // Identical entry time (bulk import): id decides.
+    const bulk = [{ ...late, createdAt: early.createdAt }, early]
+    expect(dispatchCoilTrace('A', 2, bulk, [])[0].babyCoilId).toBe('L-A')  // 'p1' < 'p2'
+  })
 })
 
 describe('skuAgeing — FIFO stock ageing (first produced, first out)', () => {
