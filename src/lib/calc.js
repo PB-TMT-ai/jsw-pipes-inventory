@@ -2879,7 +2879,11 @@ export function dispatchCoilTrace(skuCode, pieces, productions, dispatches, excl
   const ledger = []
   const atPlant = (x) => !plant || x.plant === plant
   ;(productions || []).filter(p => !p.deleted && keyOf(p.skuCode) === wantKey && atPlant(p))
-    .sort((a, b) => String(a.dateOfProduction || '').localeCompare(String(b.dateOfProduction || '')))
+    // Same-date ties by entry time, then id — never by array order, which differs between the
+    // browser store and a script's export, so two runs could hand the same tubes to two invoices.
+    .sort((a, b) => String(a.dateOfProduction || '').localeCompare(String(b.dateOfProduction || ''))
+      || String(a.createdAt || '').localeCompare(String(b.createdAt || ''))
+      || String(a.id || '').localeCompare(String(b.id || '')))
     .forEach(p => (p.coilAllocations || []).forEach(a =>
       ledger.push({ babyCoilId: a.babyCoilId, hrCoilId: a.hrCoilId, pieces: Number(a.pieces || 0), weight: Number(a.weight || 0) })))
 
